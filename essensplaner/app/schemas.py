@@ -45,3 +45,37 @@ class SettingsIn(BaseModel):
 class SettingsOut(SettingsIn):
     available_calendars: list[EntityOption] = []
     available_todo_lists: list[EntityOption] = []
+
+
+class RecipeExportFile(BaseModel):
+    """Export-/Import-Dateiformat: eine oder mehrere Rezepte, ohne DB-IDs."""
+    recipes: list[RecipeIn]
+
+
+class ImportConflict(BaseModel):
+    import_index: int
+    imported_title: str
+    existing_id: int
+    existing_title: str
+
+
+class ImportPreviewOut(BaseModel):
+    total: int
+    new_count: int
+    conflicts: list[ImportConflict]
+
+
+class ImportResolution(BaseModel):
+    import_index: int
+    action: str  # "alt" (bestehendes Rezept behalten, Import überspringen) | "neu" (Import übernimmt)
+
+
+class ImportApplyIn(BaseModel):
+    recipes: list[RecipeIn]
+    resolutions: list[ImportResolution] = []
+
+
+class ImportApplyOut(BaseModel):
+    imported: int
+    overwritten: int
+    skipped: int

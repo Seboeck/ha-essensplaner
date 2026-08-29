@@ -107,6 +107,42 @@
     cursor: pointer;
   }
   button.primary:disabled { opacity: 0.6; cursor: default; }
+  button.secondary {
+    padding: 7px 14px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg);
+    color: var(--fg);
+    font-size: 0.85rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  button.secondary:hover { border-color: var(--accent); color: var(--accent); }
+  .toolbar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-bottom: 16px;
+  }
+  .toolbar input[type="file"] { display: none; }
+  .recipe-export-btn {
+    float: right;
+    padding: 4px 10px;
+    font-size: 0.75rem;
+  }
+  .conflict-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .conflict-row:last-child { border-bottom: none; }
+  .conflict-title { font-weight: 600; }
+  .conflict-options { display: flex; gap: 14px; font-size: 0.85rem; white-space: nowrap; }
+  .conflict-options label { display: inline-flex; align-items: center; gap: 4px; font-weight: normal; margin: 0; }
   .msg {
     margin-top: 16px;
     padding: 10px 14px;
@@ -166,6 +202,18 @@
   </nav>
 
   <section id="tab-recipes" class="panel active">
+    <div class="toolbar">
+      <button id="export-all" class="secondary">⭳ Alle exportieren</button>
+      <button id="import-trigger" class="secondary">⭱ Importieren</button>
+      <input type="file" id="import-file" accept="application/json,.json">
+    </div>
+    <div id="import-msg" class="msg"></div>
+    <div id="import-conflicts" class="card" style="display:none;">
+      <p class="recipe-title">Import: Duplikate gefunden</p>
+      <p class="hint">Diese Rezepte existieren bereits (gleicher Titel). Wähle pro Rezept, welche Version behalten werden soll.</p>
+      <div id="conflicts-list"></div>
+      <button id="apply-import" class="primary">Import abschließen</button>
+    </div>
     <div id="recipes-list"></div>
   </section>
 
@@ -231,6 +279,7 @@
           : '<p class="placeholder">Keine Zutaten hinterlegt.</p>';
         return `
           <div class="card">
+            <button class="secondary recipe-export-btn" data-export-id="${r.id}">⭳ Export</button>
             <p class="recipe-title">${r.is_favorite ? '<span class="star">★</span>' : ''}${escapeHtml(r.title)}</p>
             <p class="recipe-meta">${r.base_servings} Portionen · ${r.ingredients.length} Zutat(en)</p>
             ${tags}
@@ -329,6 +378,136 @@
         saveBtn.disabled = false;
       }
     });
+
+    // ---------- Export / Import ----------
+    function slugify(str) {
+      return str.trim().toLowerCase()
+        .replace(/[äöüß]/g, c => ({ä:'ae', ö:'oe', ü:'ue', ß:'ss'}[c]))
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '') || 'rezept';
+    }
+
+    function downloadJson(filename, data) {
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    }
+
+    document.getElementById('export-all').addEventListener('click', async () => {
+      const res = await fetch('api/recipes/export');
+      const data = await res.json();
+      downloadJson('essensplaner-rezepte.json', data);
+    });
+
+    document.getElementById('recipes-list').addEventListener('click', async (e) => {
+      const btn = e.target.closest('[data-export-id]');
+      if (!btn) return;
+      const id = btn.dataset.exportId;
+      const res = await fetch(`api/recipes/${id}/export`);
+      const data = await res.json();
+      const title = data.recipes[0] ? data.recipes[0].title : 'rezept';
+      downloadJson(`rezept-${slugify(title)}.json`, data);
+    });
+
+    const importFileInput = document.getElementById('import-file');
+    const importMsg = document.getElementById('import-msg');
+    const conflictsPanel = document.getElementById('import-conflicts');
+    const conflictsList = document.getElementById('conflicts-list');
+    let pendingImportRecipes = null;
+
+    function showImportMsg(text, ok) {
+      importMsg.textContent = text;
+      importMsg.className = 'msg ' + (ok ? 'ok' : 'err');
+    }
+
+    document.getElementById('import-trigger').addEventListener('click', () => importFileInput.click());
+
+    importFileInput.addEventListener('change', async () => {
+      const file = importFileInput.files[0];
+      if (!file) return;
+      importMsg.className = 'msg';
+      conflictsPanel.style.display = 'none';
+      try {
+        const text = await file.text();
+        const parsed = JSON.parse(text);
+        const recipes = Array.isArray(parsed) ? parsed : parsed.recipes;
+        if (!Array.isArray(recipes) || !recipes.length) {
+          throw new Error('Datei enthält keine Rezepte.');
+        }
+        pendingImportRecipes = recipes;
+
+        const previewRes = await fetch('api/recipes/import/preview', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ recipes }),
+        });
+        if (!previewRes.ok) throw new Error(await previewRes.text());
+        const preview = await previewRes.json();
+
+        if (preview.conflicts.length === 0) {
+          await runImportApply([]);
+        } else {
+          renderConflicts(preview.conflicts);
+        }
+      } catch (e) {
+        showImportMsg('Fehler beim Import: ' + e.message, false);
+      } finally {
+        importFileInput.value = '';
+      }
+    });
+
+    function renderConflicts(conflicts) {
+      conflictsList.innerHTML = conflicts.map(c => `
+        <div class="conflict-row" data-index="${c.import_index}">
+          <div>
+            <div class="conflict-title">${escapeHtml(c.imported_title)}</div>
+            <div class="hint">bereits vorhanden als: ${escapeHtml(c.existing_title)}</div>
+          </div>
+          <div class="conflict-options">
+            <label><input type="radio" name="conflict-${c.import_index}" value="alt" checked> Alt behalten</label>
+            <label><input type="radio" name="conflict-${c.import_index}" value="neu"> Neu übernehmen</label>
+          </div>
+        </div>
+      `).join('');
+      conflictsPanel.style.display = 'block';
+    }
+
+    document.getElementById('apply-import').addEventListener('click', async () => {
+      const rows = conflictsList.querySelectorAll('.conflict-row');
+      const resolutions = [...rows].map(row => {
+        const index = parseInt(row.dataset.index, 10);
+        const checked = row.querySelector('input[type="radio"]:checked');
+        return { import_index: index, action: checked ? checked.value : 'alt' };
+      });
+      await runImportApply(resolutions);
+    });
+
+    async function runImportApply(resolutions) {
+      try {
+        const res = await fetch('api/recipes/import/apply', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ recipes: pendingImportRecipes, resolutions }),
+        });
+        if (!res.ok) throw new Error(await res.text());
+        const result = await res.json();
+        showImportMsg(
+          `Import fertig: ${result.imported} neu, ${result.overwritten} überschrieben, ${result.skipped} übersprungen (alt behalten).`,
+          true
+        );
+        conflictsPanel.style.display = 'none';
+        pendingImportRecipes = null;
+        loadRecipes();
+      } catch (e) {
+        showImportMsg('Fehler beim Import: ' + e.message, false);
+      }
+    }
 
     loadRecipes();
     loadSettings();

@@ -3,6 +3,21 @@
 Alle nennenswerten Änderungen an diesem Add-on werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.4.0] - 2026-08-30
+
+### Hinzugefügt
+
+- Export/Import für Rezepte:
+  - `GET /api/recipes/export` – alle Rezepte als JSON-Datei
+  - `GET /api/recipes/{id}/export` – einzelnes Rezept als JSON-Datei
+  - `POST /api/recipes/import/preview` – prüft eine Import-Datei auf
+    Titel-Duplikate mit bestehenden Rezepten, ohne die DB zu ändern
+  - `POST /api/recipes/import/apply` – führt den Import durch; neue Rezepte
+    werden immer angelegt, für Duplikate entscheidet der Client pro Rezept
+    "Alt behalten" oder "Neu übernehmen" (überschreibt das bestehende Rezept)
+  - UI: „Alle exportieren"/„Importieren"-Buttons im Rezepte-Tab, Export-Button
+    pro Rezeptkarte, Konfliktauflösungs-Dialog bei erkannten Duplikaten
+
 ## [0.3.0] - 2026-08-29
 
 ### Hinzugefügt
