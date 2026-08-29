@@ -1,5 +1,5 @@
 import os
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
 from models import Base
@@ -12,8 +12,18 @@ engine = create_engine(f"sqlite:///{DB_PATH}", connect_args={"check_same_thread"
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 
+def _migrate_add_missing_columns():
+    """Ergänzt Spalten, die create_all() bei bereits bestehenden Tabellen nicht nachträgt."""
+    with engine.connect() as conn:
+        existing = {row[1] for row in conn.execute(text("PRAGMA table_info(settings)"))}
+        if "anthropic_api_key" not in existing:
+            conn.execute(text("ALTER TABLE settings ADD COLUMN anthropic_api_key VARCHAR"))
+            conn.commit()
+
+
 def init_db():
     Base.metadata.create_all(bind=engine)
+    _migrate_add_missing_columns()
 
 
 def get_db():

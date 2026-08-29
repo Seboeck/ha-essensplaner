@@ -40,9 +40,14 @@ class EntityOption(BaseModel):
 class SettingsIn(BaseModel):
     calendar_entity: str
     todo_entity: str
+    # None = unverändert lassen, "" = Key löschen, sonst = neuen Key setzen
+    anthropic_api_key: Optional[str] = None
 
 
-class SettingsOut(SettingsIn):
+class SettingsOut(BaseModel):
+    calendar_entity: str
+    todo_entity: str
+    anthropic_api_key_set: bool = False
     available_calendars: list[EntityOption] = []
     available_todo_lists: list[EntityOption] = []
 

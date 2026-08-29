@@ -38,6 +38,7 @@ class Settings(Base):
     id = Column(Integer, primary_key=True, default=1)
     calendar_entity = Column(String, nullable=True)
     todo_entity = Column(String, nullable=True)
+    anthropic_api_key = Column(String, nullable=True)
 
 
 class PlanEntry(Base):

@@ -85,7 +85,7 @@
     margin-top: 16px;
   }
   label:first-child { margin-top: 0; }
-  select {
+  select, input[type="text"], input[type="password"], input[type="number"], textarea {
     width: 100%;
     padding: 10px;
     border-radius: 6px;
@@ -93,8 +93,21 @@
     background: var(--bg);
     color: var(--fg);
     font-size: 1rem;
+    font-family: inherit;
   }
+  textarea { resize: vertical; }
+  .ingredient-row {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 8px;
+    align-items: center;
+  }
+  .ingredient-row .ing-name { flex: 2; }
+  .ingredient-row .ing-amount { flex: 1; }
+  .ingredient-row .ing-unit { flex: 1; }
+  .ingredient-row button { flex: 0 0 auto; }
   .hint { color: var(--muted); font-size: 0.85rem; margin-top: 4px; }
+  .hint a { color: var(--accent); }
   button.primary {
     margin-top: 20px;
     padding: 10px 20px;
@@ -204,8 +217,10 @@
   <section id="tab-recipes" class="panel active">
     <div class="toolbar">
       <button id="export-all" class="secondary">⭳ Alle exportieren</button>
-      <button id="import-trigger" class="secondary">⭱ Importieren</button>
+      <button id="import-trigger" class="secondary">⭱ JSON importieren</button>
       <input type="file" id="import-file" accept="application/json,.json">
+      <button id="photo-import-trigger" class="secondary">📷 Foto-Import</button>
+      <input type="file" id="photo-import-file" accept="image/*">
     </div>
     <div id="import-msg" class="msg"></div>
     <div id="import-conflicts" class="card" style="display:none;">
@@ -213,6 +228,32 @@
       <p class="hint">Diese Rezepte existieren bereits (gleicher Titel). Wähle pro Rezept, welche Version behalten werden soll.</p>
       <div id="conflicts-list"></div>
       <button id="apply-import" class="primary">Import abschließen</button>
+    </div>
+    <div id="photo-import-msg" class="msg"></div>
+    <div id="photo-review" class="card" style="display:none;">
+      <p class="recipe-title">Foto-Import: Rezept prüfen</p>
+      <p class="hint">Bitte alle Felder kontrollieren, besonders bei handschriftlichen Rezepten – erst nach Prüfung speichern.</p>
+
+      <label for="pr-title">Titel</label>
+      <input type="text" id="pr-title">
+
+      <label for="pr-servings">Portionen</label>
+      <input type="number" id="pr-servings" min="1">
+
+      <label for="pr-tags">Tags (kommagetrennt)</label>
+      <input type="text" id="pr-tags" placeholder="z.B. vegetarisch,schnell">
+
+      <label>Zutaten</label>
+      <div id="pr-ingredients"></div>
+      <button type="button" id="pr-add-ingredient" class="secondary">+ Zutat</button>
+
+      <label for="pr-instructions">Zubereitung</label>
+      <textarea id="pr-instructions" rows="6"></textarea>
+
+      <div style="margin-top:20px;">
+        <button id="pr-save" class="primary" style="margin-top:0;">Rezept speichern</button>
+        <button id="pr-cancel" class="secondary" style="margin-left:10px;">Verwerfen</button>
+      </div>
     </div>
     <div id="recipes-list"></div>
   </section>
@@ -236,6 +277,11 @@
       <label for="todo">To-do-Liste (Einkaufsliste)</label>
       <select id="todo"></select>
       <p class="hint">Hierhin wird die aggregierte Einkaufsliste gepusht (z.B. eine lokale Liste oder eine Bring!-Liste).</p>
+
+      <label for="api-key">Anthropic API-Key (für Foto-Import)</label>
+      <input type="password" id="api-key" autocomplete="off" placeholder="Neuen Key eingeben zum Setzen/Ändern">
+      <p class="hint" id="api-key-status"></p>
+      <p class="hint"><a href="#" id="api-key-clear">Key entfernen</a></p>
 
       <button id="save" class="primary">Speichern</button>
       <div id="settings-msg" class="msg"></div>
@@ -327,8 +373,25 @@
     // ---------- Einstellungen ----------
     const calendarSelect = document.getElementById('calendar');
     const todoSelect = document.getElementById('todo');
+    const apiKeyInput = document.getElementById('api-key');
+    const apiKeyStatus = document.getElementById('api-key-status');
     const saveBtn = document.getElementById('save');
     const settingsMsg = document.getElementById('settings-msg');
+
+    let clearApiKeyRequested = false;
+
+    function updateApiKeyStatus(isSet) {
+      apiKeyStatus.textContent = isSet
+        ? 'Ein API-Key ist hinterlegt. Neuen Wert eingeben, um ihn zu ersetzen.'
+        : 'Kein API-Key hinterlegt – Foto-Import ist deaktiviert.';
+    }
+
+    document.getElementById('api-key-clear').addEventListener('click', (e) => {
+      e.preventDefault();
+      apiKeyInput.value = '';
+      clearApiKeyRequested = true;
+      saveBtn.click();
+    });
 
     function fillSelect(select, options, current) {
       select.innerHTML = '';
@@ -353,6 +416,7 @@
         const data = await res.json();
         fillSelect(calendarSelect, data.available_calendars, data.calendar_entity);
         fillSelect(todoSelect, data.available_todo_lists, data.todo_entity);
+        updateApiKeyStatus(data.anthropic_api_key_set);
       } catch (e) {
         showSettingsMsg('Fehler beim Laden der Einstellungen: ' + e.message, false);
       }
@@ -362,15 +426,25 @@
       saveBtn.disabled = true;
       settingsMsg.className = 'msg';
       try {
+        const payload = {
+          calendar_entity: calendarSelect.value,
+          todo_entity: todoSelect.value,
+        };
+        if (clearApiKeyRequested) {
+          payload.anthropic_api_key = '';
+        } else if (apiKeyInput.value.trim()) {
+          payload.anthropic_api_key = apiKeyInput.value.trim();
+        }
         const res = await fetch('api/settings', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            calendar_entity: calendarSelect.value,
-            todo_entity: todoSelect.value,
-          }),
+          body: JSON.stringify(payload),
         });
         if (!res.ok) throw new Error(await res.text());
+        const data = await res.json();
+        apiKeyInput.value = '';
+        clearApiKeyRequested = false;
+        updateApiKeyStatus(data.anthropic_api_key_set);
         showSettingsMsg('Gespeichert.', true);
       } catch (e) {
         showSettingsMsg('Fehler beim Speichern: ' + e.message, false);
@@ -508,6 +582,117 @@
         showImportMsg('Fehler beim Import: ' + e.message, false);
       }
     }
+
+    // ---------- Foto-Import ----------
+    const photoImportFile = document.getElementById('photo-import-file');
+    const photoImportMsg = document.getElementById('photo-import-msg');
+    const photoReview = document.getElementById('photo-review');
+    const prIngredients = document.getElementById('pr-ingredients');
+
+    function showPhotoMsg(text, ok) {
+      photoImportMsg.textContent = text;
+      photoImportMsg.className = 'msg ' + (ok ? 'ok' : 'err');
+    }
+
+    document.getElementById('photo-import-trigger').addEventListener('click', () => photoImportFile.click());
+
+    function addIngredientRow(ing) {
+      ing = ing || { name: '', amount: '', unit: '' };
+      const row = document.createElement('div');
+      row.className = 'ingredient-row';
+      row.innerHTML = `
+        <input type="text" class="ing-name" placeholder="Zutat" value="${escapeHtml(ing.name || '')}">
+        <input type="text" class="ing-amount" placeholder="Menge" value="${ing.amount ?? ''}">
+        <input type="text" class="ing-unit" placeholder="Einheit" value="${escapeHtml(ing.unit || '')}">
+        <button type="button" class="secondary">✕</button>
+      `;
+      row.querySelector('button').addEventListener('click', () => row.remove());
+      prIngredients.appendChild(row);
+    }
+
+    document.getElementById('pr-add-ingredient').addEventListener('click', () => addIngredientRow());
+
+    function fillReviewForm(recipe) {
+      document.getElementById('pr-title').value = recipe.title || '';
+      document.getElementById('pr-servings').value = recipe.base_servings || 4;
+      document.getElementById('pr-tags').value = recipe.tags || '';
+      document.getElementById('pr-instructions').value = recipe.instructions || '';
+      prIngredients.innerHTML = '';
+      const ingredients = recipe.ingredients || [];
+      if (ingredients.length) {
+        ingredients.forEach(addIngredientRow);
+      } else {
+        addIngredientRow();
+      }
+    }
+
+    photoImportFile.addEventListener('change', async () => {
+      const file = photoImportFile.files[0];
+      if (!file) return;
+      photoReview.style.display = 'none';
+      showPhotoMsg('Foto wird analysiert …', true);
+      try {
+        const formData = new FormData();
+        formData.append('file', file);
+        const res = await fetch('api/recipes/import-photo', { method: 'POST', body: formData });
+        if (!res.ok) throw new Error(await res.text());
+        const recipe = await res.json();
+        fillReviewForm(recipe);
+        photoImportMsg.className = 'msg';
+        photoReview.style.display = 'block';
+      } catch (e) {
+        showPhotoMsg('Fehler beim Foto-Import: ' + e.message, false);
+      } finally {
+        photoImportFile.value = '';
+      }
+    });
+
+    document.getElementById('pr-cancel').addEventListener('click', () => {
+      photoReview.style.display = 'none';
+      photoImportMsg.className = 'msg';
+    });
+
+    document.getElementById('pr-save').addEventListener('click', async () => {
+      const ingredients = [...prIngredients.querySelectorAll('.ingredient-row')].map(row => {
+        const name = row.querySelector('.ing-name').value.trim();
+        const amountRaw = row.querySelector('.ing-amount').value.trim();
+        const unit = row.querySelector('.ing-unit').value.trim();
+        return {
+          name,
+          amount: amountRaw ? parseFloat(amountRaw.replace(',', '.')) : null,
+          unit: unit || null,
+        };
+      }).filter(i => i.name);
+
+      const title = document.getElementById('pr-title').value.trim();
+      if (!title) {
+        showPhotoMsg('Bitte einen Titel angeben.', false);
+        return;
+      }
+
+      const payload = {
+        title,
+        base_servings: parseInt(document.getElementById('pr-servings').value, 10) || 4,
+        instructions: document.getElementById('pr-instructions').value,
+        is_favorite: false,
+        tags: document.getElementById('pr-tags').value.trim(),
+        ingredients,
+      };
+
+      try {
+        const res = await fetch('api/recipes', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        if (!res.ok) throw new Error(await res.text());
+        showPhotoMsg('Rezept gespeichert.', true);
+        photoReview.style.display = 'none';
+        loadRecipes();
+      } catch (e) {
+        showPhotoMsg('Fehler beim Speichern: ' + e.message, false);
+      }
+    });
 
     loadRecipes();
     loadSettings();

@@ -1,5 +1,8 @@
+import base64
 from datetime import date
-from fastapi import FastAPI, Depends, HTTPException
+
+import anthropic
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, File
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
@@ -44,14 +47,24 @@ def get_settings(db: Session) -> Settings:
 
 # ---------- Einstellungen ----------
 
+async def _list_entities_safe(domain: str) -> list[dict]:
+    """Wie ha_client.list_entities, aber ohne die Einstellungsseite lahmzulegen,
+    wenn Home Assistant gerade nicht erreichbar ist (z.B. lokales Testen)."""
+    try:
+        return await ha_client.list_entities(domain)
+    except Exception:
+        return []
+
+
 @app.get("/api/settings", response_model=SettingsOut)
 async def read_settings(db: Session = Depends(get_db)):
     settings = get_settings(db)
-    calendars = await ha_client.list_entities("calendar")
-    todo_lists = await ha_client.list_entities("todo")
+    calendars = await _list_entities_safe("calendar")
+    todo_lists = await _list_entities_safe("todo")
     return SettingsOut(
         calendar_entity=settings.calendar_entity,
         todo_entity=settings.todo_entity,
+        anthropic_api_key_set=bool(settings.anthropic_api_key),
         available_calendars=calendars,
         available_todo_lists=todo_lists,
     )
@@ -62,12 +75,15 @@ async def save_settings(payload: SettingsIn, db: Session = Depends(get_db)):
     settings = get_settings(db)
     settings.calendar_entity = payload.calendar_entity
     settings.todo_entity = payload.todo_entity
+    if payload.anthropic_api_key is not None:
+        settings.anthropic_api_key = payload.anthropic_api_key or None
     db.commit()
-    calendars = await ha_client.list_entities("calendar")
-    todo_lists = await ha_client.list_entities("todo")
+    calendars = await _list_entities_safe("calendar")
+    todo_lists = await _list_entities_safe("todo")
     return SettingsOut(
         calendar_entity=settings.calendar_entity,
         todo_entity=settings.todo_entity,
+        anthropic_api_key_set=bool(settings.anthropic_api_key),
         available_calendars=calendars,
         available_todo_lists=todo_lists,
     )
@@ -236,16 +252,111 @@ def apply_import(payload: ImportApplyIn, db: Session = Depends(get_db)):
     return ImportApplyOut(imported=imported, overwritten=overwritten, skipped=skipped)
 
 
-# ---------- Foto-Import (Platzhalter für Vision-Erkennung) ----------
+# ---------- Foto-Import (Vision-Erkennung) ----------
 
-@app.post("/api/recipes/import-photo")
-async def import_recipe_photo():
+RECIPE_EXTRACTION_TOOL = {
+    "name": "recipe_data",
+    "description": (
+        "Strukturierte Rezeptdaten, die aus dem Foto einer Rezeptkarte oder eines "
+        "handschriftlichen Rezepts erkannt wurden."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string", "description": "Titel des Rezepts"},
+            "base_servings": {
+                "type": "integer",
+                "description": "Anzahl Portionen laut Rezept, falls angegeben, sonst 4",
+            },
+            "instructions": {"type": "string", "description": "Zubereitungsschritte als Fließtext"},
+            "tags": {
+                "type": "string",
+                "description": "Kommagetrennte Schlagworte, z.B. 'vegetarisch,schnell'; leerer String wenn keine erkennbar",
+            },
+            "ingredients": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "amount": {"type": ["number", "null"]},
+                        "unit": {
+                            "type": ["string", "null"],
+                            "description": "z.B. g, kg, ml, l, Stück, EL, TL",
+                        },
+                    },
+                    "required": ["name"],
+                },
+            },
+        },
+        "required": ["title", "ingredients", "instructions"],
+    },
+}
+
+RECIPE_EXTRACTION_SYSTEM_PROMPT = (
+    "Du liest Kochrezepte von Fotos (gedruckte Rezeptkarten oder Handschrift) und gibst "
+    "sie strukturiert zurück. Bei Unsicherheiten (v.a. bei Handschrift) wähle die "
+    "plausibelste Lesart – die Daten werden vor dem Speichern von einem Menschen geprüft. "
+    "Mengen als Zahl im amount-Feld (z.B. 0.5 für 1/2), die Einheit separat im unit-Feld. "
+    "base_servings: Zahl laut Rezept, sonst 4."
+)
+
+
+@app.post("/api/recipes/import-photo", response_model=RecipeIn)
+async def import_recipe_photo(file: UploadFile = File(...), db: Session = Depends(get_db)):
     """
-    TODO: Foto entgegennehmen, per Claude Vision (Anthropic API) in strukturierte
-    Rezeptdaten umwandeln und als Entwurf zurückgeben (Review vor dem Speichern,
-    besonders wichtig bei handschriftlichen Rezepten).
+    Nimmt ein Foto einer Rezeptkarte oder eines handschriftlichen Rezepts entgegen,
+    erkennt die Daten per Claude Vision und gibt sie als Entwurf zurück – Review vor
+    dem Speichern ist Pflicht (besonders wichtig bei handschriftlichen Rezepten).
     """
-    raise HTTPException(501, "Noch nicht implementiert – Platzhalter für Vision-Import")
+    settings = get_settings(db)
+    if not settings.anthropic_api_key:
+        raise HTTPException(400, "Bitte zuerst einen Anthropic API-Key in den Einstellungen hinterlegen.")
+
+    media_type = file.content_type or "image/jpeg"
+    if not media_type.startswith("image/"):
+        raise HTTPException(400, "Bitte ein Bild hochladen (JPEG, PNG, HEIC, ...).")
+
+    image_bytes = await file.read()
+    image_b64 = base64.standard_b64encode(image_bytes).decode("utf-8")
+
+    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    try:
+        response = client.messages.create(
+            model="claude-sonnet-5",
+            max_tokens=2000,
+            thinking={"type": "disabled"},
+            tools=[RECIPE_EXTRACTION_TOOL],
+            tool_choice={"type": "tool", "name": "recipe_data"},
+            system=RECIPE_EXTRACTION_SYSTEM_PROMPT,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {"type": "base64", "media_type": media_type, "data": image_b64},
+                    },
+                    {"type": "text", "text": "Erkenne dieses Rezept und gib die strukturierten Daten zurück."},
+                ],
+            }],
+        )
+    except anthropic.AuthenticationError:
+        raise HTTPException(401, "Anthropic API-Key ist ungültig.")
+    except anthropic.RateLimitError:
+        raise HTTPException(429, "Rate-Limit bei der Anthropic API erreicht, bitte kurz warten.")
+    except anthropic.APIStatusError as e:
+        raise HTTPException(502, f"Fehler bei der Anthropic API: {e.message}")
+    except anthropic.APIConnectionError:
+        raise HTTPException(502, "Anthropic API nicht erreichbar.")
+
+    tool_use = next((b for b in response.content if b.type == "tool_use"), None)
+    if not tool_use:
+        raise HTTPException(502, "Konnte keine Rezeptdaten aus dem Foto erkennen.")
+
+    try:
+        return RecipeIn(**tool_use.input)
+    except Exception:
+        raise HTTPException(502, "Erkannte Daten hatten ein unerwartetes Format.")
 
 
 # ---------- Wochenplan ----------
