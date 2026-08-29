@@ -3,6 +3,8 @@ Kommunikation mit der Home Assistant Core API über den Supervisor-Proxy.
 Nutzt den automatisch bereitgestellten SUPERVISOR_TOKEN (siehe config.yaml: homeassistant_api: true).
 """
 import os
+from datetime import date, timedelta
+
 import httpx
 
 HA_URL = os.environ.get("HA_URL", "http://supervisor/core")
@@ -25,11 +27,12 @@ async def _post(path: str, payload: dict):
 
 async def upsert_calendar_event(date_str: str, title: str):
     """Legt für einen Tag ein Kalender-Event mit dem Rezeptnamen an (Local Calendar Integration)."""
+    end_date_str = (date.fromisoformat(date_str) + timedelta(days=1)).isoformat()
     payload = {
         "entity_id": CALENDAR_ENTITY,
         "summary": title,
         "start_date": date_str,
-        "end_date": date_str,
+        "end_date": end_date_str,
     }
     return await _post("/api/services/calendar/create_event", payload)
 
