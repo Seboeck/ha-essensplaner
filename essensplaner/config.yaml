@@ -1,5 +1,5 @@
 name: "Essensplaner"
-version: "0.2.1"
+version: "0.3.0"
 slug: "essensplaner"
 description: "Rezeptverwaltung, Wochenplanung und Einkaufsliste mit Home-Assistant-Anbindung (Kalender, To-do/Bring!, input_select)"
 url: "https://github.com/Seboeck/ha-essensplaner"
@@ -18,12 +18,14 @@ options:
   todo_entity: "todo.einkaufen"
   family_adults: 2
   family_kids: 2
+  db_path: "/share/essensplaner/essensplaner.db"
 schema:
   ha_url: str
   calendar_entity: str
   todo_entity: str
   family_adults: int
   family_kids: int
+  db_path: str
 map:
   - share:rw
 hassio_api: true

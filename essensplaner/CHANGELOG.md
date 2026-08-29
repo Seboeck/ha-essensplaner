@@ -3,7 +3,16 @@
 Alle nennenswerten Änderungen an diesem Add-on werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
-## [0.2.1] - 2026-08-29
+## [0.3.0] - 2026-08-29
+
+### Hinzugefügt
+
+- Rezepte-Ansicht (Tab „Rezepte"): Karten mit Titel, Portionen, Tags,
+  Favoriten-Stern, aufklappbaren Zutaten und Anleitung.
+- Zutatenliste-Ansicht (Tab „Zutaten"): alphabetische, deduplizierte Liste
+  aller Zutatennamen über alle Rezepte hinweg (ohne Mengen), mit
+  Preis-Spalte als Platzhalter für eine spätere Preiserfassung.
+- Einstellungen sind jetzt ein Tab auf derselben Seite statt der einzigen Ansicht.
 
 ### Geändert
 
@@ -12,6 +21,11 @@ Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
   `/share` (bereits über `map: share:rw` gemountet) übersteht das. Damit gehen
   Rezepte/Wochenplan nicht mehr verloren, wenn das Add-on für ein Update
   deinstalliert und neu installiert werden muss.
+- DB-Pfad ist jetzt über die Add-on-Option `db_path` konfigurierbar
+  (`run.sh` exportierte ihn zuvor hart auf `/data/essensplaner.db` –
+  das hätte die Verschiebung nach `/share` unwirksam gemacht).
+
+## [0.2.1] - 2026-08-29 (nie ausgeliefert – Fix war durch run.sh-Hardcoding wirkungslos)
 
 ## [0.2.0] - 2026-08-29
 

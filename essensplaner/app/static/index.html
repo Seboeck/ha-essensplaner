@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Essensplaner – Einstellungen</title>
+<title>Essensplaner</title>
 <style>
   :root {
     color-scheme: light dark;
@@ -14,6 +14,8 @@
     --accent: #03a9f4;
     --accent-fg: #ffffff;
     --card-bg: #f7f7f7;
+    --tag-bg: #e8f4fb;
+    --tag-fg: #036999;
     --ok-bg: #e6f6e6;
     --ok-fg: #1e6b1e;
     --err-bg: #fbe6e6;
@@ -26,6 +28,8 @@
       --muted: #9a9a9a;
       --border: #333333;
       --card-bg: #1c1e21;
+      --tag-bg: #123241;
+      --tag-fg: #7fd0f2;
       --ok-bg: #14311a;
       --ok-fg: #7fd68a;
       --err-bg: #3a1616;
@@ -39,16 +43,40 @@
     background: var(--bg);
     color: var(--fg);
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    max-width: 640px;
+    max-width: 780px;
   }
   h1 { font-size: 1.4rem; margin-bottom: 4px; }
   p.sub { color: var(--muted); margin-top: 0; }
+
+  nav.tabs {
+    display: flex;
+    gap: 4px;
+    border-bottom: 1px solid var(--border);
+    margin-top: 20px;
+  }
+  nav.tabs button {
+    background: none;
+    border: none;
+    padding: 10px 16px;
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--muted);
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+  }
+  nav.tabs button.active {
+    color: var(--accent);
+    border-bottom-color: var(--accent);
+  }
+  section.panel { display: none; padding-top: 20px; }
+  section.panel.active { display: block; }
+
   .card {
     background: var(--card-bg);
     border: 1px solid var(--border);
     border-radius: 10px;
     padding: 20px;
-    margin-top: 20px;
+    margin-bottom: 16px;
   }
   label {
     display: block;
@@ -67,7 +95,7 @@
     font-size: 1rem;
   }
   .hint { color: var(--muted); font-size: 0.85rem; margin-top: 4px; }
-  button {
+  button.primary {
     margin-top: 20px;
     padding: 10px 20px;
     border: none;
@@ -78,7 +106,7 @@
     font-weight: 600;
     cursor: pointer;
   }
-  button:disabled { opacity: 0.6; cursor: default; }
+  button.primary:disabled { opacity: 0.6; cursor: default; }
   .msg {
     margin-top: 16px;
     padding: 10px 14px;
@@ -88,30 +116,170 @@
   }
   .msg.ok { background: var(--ok-bg); color: var(--ok-fg); display: block; }
   .msg.err { background: var(--err-bg); color: var(--err-fg); display: block; }
+
+  .recipe-title { font-size: 1.1rem; font-weight: 700; margin: 0 0 6px 0; }
+  .recipe-meta { color: var(--muted); font-size: 0.85rem; margin-bottom: 10px; }
+  .tag {
+    display: inline-block;
+    background: var(--tag-bg);
+    color: var(--tag-fg);
+    border-radius: 999px;
+    padding: 2px 10px;
+    font-size: 0.75rem;
+    margin-right: 6px;
+  }
+  .star { color: #e0a800; margin-right: 4px; }
+  details summary {
+    cursor: pointer;
+    font-weight: 600;
+    margin-top: 10px;
+    color: var(--accent);
+  }
+  ul.ingredients { margin: 8px 0 0 0; padding-left: 20px; }
+  ul.ingredients li { margin-bottom: 2px; }
+  pre.instructions {
+    white-space: pre-wrap;
+    font-family: inherit;
+    margin: 8px 0 0 0;
+    font-size: 0.9rem;
+  }
+  table { width: 100%; border-collapse: collapse; }
+  table th, table td {
+    text-align: left;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.9rem;
+  }
+  table th { color: var(--muted); font-weight: 600; }
+  .placeholder { color: var(--muted); font-style: italic; }
+  .empty { color: var(--muted); padding: 20px 0; }
 </style>
 </head>
 <body>
-  <h1>🍽️ Essensplaner – Einstellungen</h1>
-  <p class="sub">Wähle, welche Home-Assistant-Kalender- und To-do-Entity der Essensplaner verwenden soll.</p>
+  <h1>🍽️ Essensplaner</h1>
+  <p class="sub">Rezeptverwaltung, Zutatenübersicht und Einstellungen.</p>
 
-  <div class="card">
-    <label for="calendar">Kalender (Wochenplan)</label>
-    <select id="calendar"></select>
-    <p class="hint">Hierhin schreibt der Wochenplan-Generator ein Event pro Tag.</p>
+  <nav class="tabs">
+    <button data-tab="recipes" class="active">Rezepte</button>
+    <button data-tab="ingredients">Zutatenliste</button>
+    <button data-tab="settings">Einstellungen</button>
+  </nav>
 
-    <label for="todo">To-do-Liste (Einkaufsliste)</label>
-    <select id="todo"></select>
-    <p class="hint">Hierhin wird die aggregierte Einkaufsliste gepusht (z.B. eine lokale Liste oder eine Bring!-Liste).</p>
+  <section id="tab-recipes" class="panel active">
+    <div id="recipes-list"></div>
+  </section>
 
-    <button id="save">Speichern</button>
-    <div id="msg" class="msg"></div>
-  </div>
+  <section id="tab-ingredients" class="panel">
+    <div class="card">
+      <table>
+        <thead><tr><th>Zutat</th><th>Preis</th></tr></thead>
+        <tbody id="ingredients-body"></tbody>
+      </table>
+      <p class="hint">Preisübersicht folgt, sobald Preise erfasst werden können.</p>
+    </div>
+  </section>
+
+  <section id="tab-settings" class="panel">
+    <div class="card">
+      <label for="calendar">Kalender (Wochenplan)</label>
+      <select id="calendar"></select>
+      <p class="hint">Hierhin schreibt der Wochenplan-Generator ein Event pro Tag.</p>
+
+      <label for="todo">To-do-Liste (Einkaufsliste)</label>
+      <select id="todo"></select>
+      <p class="hint">Hierhin wird die aggregierte Einkaufsliste gepusht (z.B. eine lokale Liste oder eine Bring!-Liste).</p>
+
+      <button id="save" class="primary">Speichern</button>
+      <div id="settings-msg" class="msg"></div>
+    </div>
+  </section>
 
   <script>
+    // ---------- Tabs ----------
+    const tabButtons = document.querySelectorAll('nav.tabs button');
+    const panels = document.querySelectorAll('section.panel');
+    tabButtons.forEach(btn => {
+      btn.addEventListener('click', () => {
+        tabButtons.forEach(b => b.classList.remove('active'));
+        panels.forEach(p => p.classList.remove('active'));
+        btn.classList.add('active');
+        document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+      });
+    });
+
+    // ---------- Rezepte ----------
+    function escapeHtml(str) {
+      const d = document.createElement('div');
+      d.textContent = str;
+      return d.innerHTML;
+    }
+
+    function renderRecipes(recipes) {
+      const container = document.getElementById('recipes-list');
+      if (!recipes.length) {
+        container.innerHTML = '<p class="empty">Noch keine Rezepte vorhanden.</p>';
+        return;
+      }
+      container.innerHTML = recipes.map(r => {
+        const tags = (r.tags || '').split(',').map(t => t.trim()).filter(Boolean)
+          .map(t => `<span class="tag">${escapeHtml(t)}</span>`).join('');
+        const ingredients = r.ingredients.length
+          ? '<ul class="ingredients">' + r.ingredients.map(i => {
+              const qty = (i.amount != null && i.unit) ? `${i.amount} ${escapeHtml(i.unit)} ` : (i.amount != null ? `${i.amount} ` : '');
+              return `<li>${qty}${escapeHtml(i.name)}</li>`;
+            }).join('') + '</ul>'
+          : '<p class="placeholder">Keine Zutaten hinterlegt.</p>';
+        return `
+          <div class="card">
+            <p class="recipe-title">${r.is_favorite ? '<span class="star">★</span>' : ''}${escapeHtml(r.title)}</p>
+            <p class="recipe-meta">${r.base_servings} Portionen · ${r.ingredients.length} Zutat(en)</p>
+            ${tags}
+            <details>
+              <summary>Zutaten &amp; Zubereitung</summary>
+              ${ingredients}
+              <pre class="instructions">${escapeHtml(r.instructions || 'Keine Anleitung hinterlegt.')}</pre>
+            </details>
+          </div>`;
+      }).join('');
+    }
+
+    function renderIngredientList(recipes) {
+      const seen = new Map();
+      for (const r of recipes) {
+        for (const ing of r.ingredients) {
+          const key = ing.name.trim().toLowerCase();
+          if (key && !seen.has(key)) seen.set(key, ing.name.trim());
+        }
+      }
+      const names = [...seen.values()].sort((a, b) => a.localeCompare(b, 'de'));
+      const body = document.getElementById('ingredients-body');
+      if (!names.length) {
+        body.innerHTML = '<tr><td colspan="2" class="empty">Keine Zutaten vorhanden.</td></tr>';
+        return;
+      }
+      body.innerHTML = names.map(n =>
+        `<tr><td>${escapeHtml(n)}</td><td class="placeholder">– noch nicht erfasst</td></tr>`
+      ).join('');
+    }
+
+    async function loadRecipes() {
+      try {
+        const res = await fetch('api/recipes');
+        if (!res.ok) throw new Error(await res.text());
+        const recipes = await res.json();
+        renderRecipes(recipes);
+        renderIngredientList(recipes);
+      } catch (e) {
+        document.getElementById('recipes-list').innerHTML =
+          `<p class="empty">Fehler beim Laden der Rezepte: ${escapeHtml(e.message)}</p>`;
+      }
+    }
+
+    // ---------- Einstellungen ----------
     const calendarSelect = document.getElementById('calendar');
     const todoSelect = document.getElementById('todo');
     const saveBtn = document.getElementById('save');
-    const msg = document.getElementById('msg');
+    const settingsMsg = document.getElementById('settings-msg');
 
     function fillSelect(select, options, current) {
       select.innerHTML = '';
@@ -124,12 +292,12 @@
       }
     }
 
-    function showMsg(text, ok) {
-      msg.textContent = text;
-      msg.className = 'msg ' + (ok ? 'ok' : 'err');
+    function showSettingsMsg(text, ok) {
+      settingsMsg.textContent = text;
+      settingsMsg.className = 'msg ' + (ok ? 'ok' : 'err');
     }
 
-    async function load() {
+    async function loadSettings() {
       try {
         const res = await fetch('api/settings');
         if (!res.ok) throw new Error(await res.text());
@@ -137,13 +305,13 @@
         fillSelect(calendarSelect, data.available_calendars, data.calendar_entity);
         fillSelect(todoSelect, data.available_todo_lists, data.todo_entity);
       } catch (e) {
-        showMsg('Fehler beim Laden der Einstellungen: ' + e.message, false);
+        showSettingsMsg('Fehler beim Laden der Einstellungen: ' + e.message, false);
       }
     }
 
     saveBtn.addEventListener('click', async () => {
       saveBtn.disabled = true;
-      msg.className = 'msg';
+      settingsMsg.className = 'msg';
       try {
         const res = await fetch('api/settings', {
           method: 'POST',
@@ -154,15 +322,16 @@
           }),
         });
         if (!res.ok) throw new Error(await res.text());
-        showMsg('Gespeichert.', true);
+        showSettingsMsg('Gespeichert.', true);
       } catch (e) {
-        showMsg('Fehler beim Speichern: ' + e.message, false);
+        showSettingsMsg('Fehler beim Speichern: ' + e.message, false);
       } finally {
         saveBtn.disabled = false;
       }
     });
 
-    load();
+    loadRecipes();
+    loadSettings();
   </script>
 </body>
 </html>

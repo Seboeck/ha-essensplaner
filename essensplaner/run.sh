@@ -7,7 +7,7 @@ export TODO_ENTITY=$(bashio::config 'todo_entity')
 export FAMILY_ADULTS=$(bashio::config 'family_adults')
 export FAMILY_KIDS=$(bashio::config 'family_kids')
 export SUPERVISOR_TOKEN=${SUPERVISOR_TOKEN}
-export DB_PATH="/data/essensplaner.db"
+export DB_PATH=$(bashio::config 'db_path')
 
 bashio::log.info "Starte Essensplaner Add-on..."
 cd /app
