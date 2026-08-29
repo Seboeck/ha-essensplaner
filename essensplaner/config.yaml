@@ -2,7 +2,7 @@ name: "Essensplaner"
 version: "0.1.0"
 slug: "essensplaner"
 description: "Rezeptverwaltung, Wochenplanung und Einkaufsliste mit Home-Assistant-Anbindung (Kalender, To-do/Bring!, input_select)"
-url: "https://github.com/DEIN-GITHUB-USER/ha-essensplaner"
+url: "https://github.com/Seboeck/ha-essensplaner"
 arch:
   - aarch64
   - amd64
