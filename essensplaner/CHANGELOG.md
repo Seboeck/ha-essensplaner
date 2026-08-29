@@ -3,6 +3,17 @@
 Alle nennenswerten Änderungen an diesem Add-on werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.2.0] - 2026-08-29
+
+### Hinzugefügt
+
+- Einstellungsseite (`/`, statisches HTML unter `app/static/`): Kalender- und
+  To-do-Entity werden per Dropdown aus den tatsächlich in Home Assistant
+  vorhandenen Entities ausgewählt (`GET/POST /api/settings`), statt nur über
+  die Add-on-Optionen (die einen Neustart erfordern) fest hinterlegt zu sein.
+  Neue `settings`-Tabelle in der DB als Ablage; Fallback auf die bisherigen
+  `CALENDAR_ENTITY`/`TODO_ENTITY`-Add-on-Optionen, falls noch nichts gespeichert ist.
+
 ## [0.1.1] - 2026-08-29
 
 ### Behoben

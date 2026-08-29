@@ -9,8 +9,8 @@ import httpx
 
 HA_URL = os.environ.get("HA_URL", "http://supervisor/core")
 TOKEN = os.environ.get("SUPERVISOR_TOKEN", "")
-CALENDAR_ENTITY = os.environ.get("CALENDAR_ENTITY", "calendar.essensplan")
-TODO_ENTITY = os.environ.get("TODO_ENTITY", "todo.einkaufen")
+DEFAULT_CALENDAR_ENTITY = os.environ.get("CALENDAR_ENTITY", "calendar.essensplan")
+DEFAULT_TODO_ENTITY = os.environ.get("TODO_ENTITY", "todo.einkaufen")
 
 HEADERS = {
     "Authorization": f"Bearer {TOKEN}",
@@ -25,11 +25,30 @@ async def _post(path: str, payload: dict):
         return resp.json() if resp.content else None
 
 
-async def upsert_calendar_event(date_str: str, title: str):
+async def _get(path: str):
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(f"{HA_URL}{path}", headers=HEADERS, timeout=10)
+        resp.raise_for_status()
+        return resp.json()
+
+
+async def list_entities(domain: str) -> list[dict]:
+    """Listet alle Entities einer Domain (z.B. 'calendar', 'todo') aus Home Assistant."""
+    states = await _get("/api/states")
+    result = []
+    for s in states:
+        entity_id = s.get("entity_id", "")
+        if entity_id.startswith(f"{domain}."):
+            friendly_name = s.get("attributes", {}).get("friendly_name", entity_id)
+            result.append({"entity_id": entity_id, "friendly_name": friendly_name})
+    return sorted(result, key=lambda e: e["friendly_name"].lower())
+
+
+async def upsert_calendar_event(calendar_entity: str, date_str: str, title: str):
     """Legt für einen Tag ein Kalender-Event mit dem Rezeptnamen an (Local Calendar Integration)."""
     end_date_str = (date.fromisoformat(date_str) + timedelta(days=1)).isoformat()
     payload = {
-        "entity_id": CALENDAR_ENTITY,
+        "entity_id": calendar_entity,
         "summary": title,
         "start_date": date_str,
         "end_date": end_date_str,
@@ -37,11 +56,11 @@ async def upsert_calendar_event(date_str: str, title: str):
     return await _post("/api/services/calendar/create_event", payload)
 
 
-async def add_shopping_items(items: list[str]):
-    """Fügt Zutaten als Einträge in die Bring!-synchronisierte To-do-Liste ein."""
+async def add_shopping_items(todo_entity: str, items: list[str]):
+    """Fügt Zutaten als Einträge in die (ggf. Bring!-synchronisierte) To-do-Liste ein."""
     results = []
     for item in items:
-        payload = {"entity_id": TODO_ENTITY, "item": item}
+        payload = {"entity_id": todo_entity, "item": item}
         results.append(await _post("/api/services/todo/add_item", payload))
     return results
 

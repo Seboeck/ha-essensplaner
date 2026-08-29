@@ -31,6 +31,15 @@ class Ingredient(Base):
     recipe = relationship("Recipe", back_populates="ingredients")
 
 
+class Settings(Base):
+    """Einzige Konfigurationszeile (id=1): welche HA-Kalender-/To-do-Entity genutzt wird."""
+    __tablename__ = "settings"
+
+    id = Column(Integer, primary_key=True, default=1)
+    calendar_entity = Column(String, nullable=True)
+    todo_entity = Column(String, nullable=True)
+
+
 class PlanEntry(Base):
     """Ein geplantes Hauptgericht für einen bestimmten Tag."""
     __tablename__ = "plan_entries"

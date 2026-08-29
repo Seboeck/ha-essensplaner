@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Essensplaner – Einstellungen</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #ffffff;
+    --fg: #1c1c1c;
+    --muted: #6b6b6b;
+    --border: #dddddd;
+    --accent: #03a9f4;
+    --accent-fg: #ffffff;
+    --card-bg: #f7f7f7;
+    --ok-bg: #e6f6e6;
+    --ok-fg: #1e6b1e;
+    --err-bg: #fbe6e6;
+    --err-fg: #99201f;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111214;
+      --fg: #eaeaea;
+      --muted: #9a9a9a;
+      --border: #333333;
+      --card-bg: #1c1e21;
+      --ok-bg: #14311a;
+      --ok-fg: #7fd68a;
+      --err-bg: #3a1616;
+      --err-fg: #e58686;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 24px;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    max-width: 640px;
+  }
+  h1 { font-size: 1.4rem; margin-bottom: 4px; }
+  p.sub { color: var(--muted); margin-top: 0; }
+  .card {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+    margin-top: 20px;
+  }
+  label {
+    display: block;
+    font-weight: 600;
+    margin-bottom: 6px;
+    margin-top: 16px;
+  }
+  label:first-child { margin-top: 0; }
+  select {
+    width: 100%;
+    padding: 10px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--fg);
+    font-size: 1rem;
+  }
+  .hint { color: var(--muted); font-size: 0.85rem; margin-top: 4px; }
+  button {
+    margin-top: 20px;
+    padding: 10px 20px;
+    border: none;
+    border-radius: 6px;
+    background: var(--accent);
+    color: var(--accent-fg);
+    font-size: 1rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  button:disabled { opacity: 0.6; cursor: default; }
+  .msg {
+    margin-top: 16px;
+    padding: 10px 14px;
+    border-radius: 6px;
+    font-size: 0.9rem;
+    display: none;
+  }
+  .msg.ok { background: var(--ok-bg); color: var(--ok-fg); display: block; }
+  .msg.err { background: var(--err-bg); color: var(--err-fg); display: block; }
+</style>
+</head>
+<body>
+  <h1>🍽️ Essensplaner – Einstellungen</h1>
+  <p class="sub">Wähle, welche Home-Assistant-Kalender- und To-do-Entity der Essensplaner verwenden soll.</p>
+
+  <div class="card">
+    <label for="calendar">Kalender (Wochenplan)</label>
+    <select id="calendar"></select>
+    <p class="hint">Hierhin schreibt der Wochenplan-Generator ein Event pro Tag.</p>
+
+    <label for="todo">To-do-Liste (Einkaufsliste)</label>
+    <select id="todo"></select>
+    <p class="hint">Hierhin wird die aggregierte Einkaufsliste gepusht (z.B. eine lokale Liste oder eine Bring!-Liste).</p>
+
+    <button id="save">Speichern</button>
+    <div id="msg" class="msg"></div>
+  </div>
+
+  <script>
+    const calendarSelect = document.getElementById('calendar');
+    const todoSelect = document.getElementById('todo');
+    const saveBtn = document.getElementById('save');
+    const msg = document.getElementById('msg');
+
+    function fillSelect(select, options, current) {
+      select.innerHTML = '';
+      for (const opt of options) {
+        const el = document.createElement('option');
+        el.value = opt.entity_id;
+        el.textContent = `${opt.friendly_name} (${opt.entity_id})`;
+        if (opt.entity_id === current) el.selected = true;
+        select.appendChild(el);
+      }
+    }
+
+    function showMsg(text, ok) {
+      msg.textContent = text;
+      msg.className = 'msg ' + (ok ? 'ok' : 'err');
+    }
+
+    async function load() {
+      try {
+        const res = await fetch('api/settings');
+        if (!res.ok) throw new Error(await res.text());
+        const data = await res.json();
+        fillSelect(calendarSelect, data.available_calendars, data.calendar_entity);
+        fillSelect(todoSelect, data.available_todo_lists, data.todo_entity);
+      } catch (e) {
+        showMsg('Fehler beim Laden der Einstellungen: ' + e.message, false);
+      }
+    }
+
+    saveBtn.addEventListener('click', async () => {
+      saveBtn.disabled = true;
+      msg.className = 'msg';
+      try {
+        const res = await fetch('api/settings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            calendar_entity: calendarSelect.value,
+            todo_entity: todoSelect.value,
+          }),
+        });
+        if (!res.ok) throw new Error(await res.text());
+        showMsg('Gespeichert.', true);
+      } catch (e) {
+        showMsg('Fehler beim Speichern: ' + e.message, false);
+      } finally {
+        saveBtn.disabled = false;
+      }
+    });
+
+    load();
+  </script>
+</body>
+</html>

@@ -30,3 +30,18 @@ class PlanEntryOut(BaseModel):
     date: str
     recipe_id: int
     recipe_title: str
+
+
+class EntityOption(BaseModel):
+    entity_id: str
+    friendly_name: str
+
+
+class SettingsIn(BaseModel):
+    calendar_entity: str
+    todo_entity: str
+
+
+class SettingsOut(SettingsIn):
+    available_calendars: list[EntityOption] = []
+    available_todo_lists: list[EntityOption] = []

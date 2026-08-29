@@ -1,10 +1,11 @@
 from datetime import date
 from fastapi import FastAPI, Depends, HTTPException
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
 from database import init_db, get_db
-from models import Recipe, Ingredient, PlanEntry
-from schemas import RecipeIn, RecipeOut, PlanEntryOut
+from models import Recipe, Ingredient, PlanEntry, Settings
+from schemas import RecipeIn, RecipeOut, PlanEntryOut, SettingsIn, SettingsOut
 import ha_client
 from planner import generate_week_plan, aggregate_shopping_list
 
@@ -14,6 +15,51 @@ app = FastAPI(title="Essensplaner")
 @app.on_event("startup")
 def on_startup():
     init_db()
+
+
+def get_settings(db: Session) -> Settings:
+    settings = db.query(Settings).get(1)
+    if not settings:
+        settings = Settings(
+            id=1,
+            calendar_entity=ha_client.DEFAULT_CALENDAR_ENTITY,
+            todo_entity=ha_client.DEFAULT_TODO_ENTITY,
+        )
+        db.add(settings)
+        db.commit()
+        db.refresh(settings)
+    return settings
+
+
+# ---------- Einstellungen ----------
+
+@app.get("/api/settings", response_model=SettingsOut)
+async def read_settings(db: Session = Depends(get_db)):
+    settings = get_settings(db)
+    calendars = await ha_client.list_entities("calendar")
+    todo_lists = await ha_client.list_entities("todo")
+    return SettingsOut(
+        calendar_entity=settings.calendar_entity,
+        todo_entity=settings.todo_entity,
+        available_calendars=calendars,
+        available_todo_lists=todo_lists,
+    )
+
+
+@app.post("/api/settings", response_model=SettingsOut)
+async def save_settings(payload: SettingsIn, db: Session = Depends(get_db)):
+    settings = get_settings(db)
+    settings.calendar_entity = payload.calendar_entity
+    settings.todo_entity = payload.todo_entity
+    db.commit()
+    calendars = await ha_client.list_entities("calendar")
+    todo_lists = await ha_client.list_entities("todo")
+    return SettingsOut(
+        calendar_entity=settings.calendar_entity,
+        todo_entity=settings.todo_entity,
+        available_calendars=calendars,
+        available_todo_lists=todo_lists,
+    )
 
 
 # ---------- Rezepte ----------
@@ -92,8 +138,11 @@ async def generate_plan(start: str, db: Session = Depends(get_db)):
         raise HTTPException(400, str(e))
 
     # in Home-Assistant-Kalender schreiben
+    settings = get_settings(db)
     for entry in entries:
-        await ha_client.upsert_calendar_event(entry.date.isoformat(), entry.recipe.title)
+        await ha_client.upsert_calendar_event(
+            settings.calendar_entity, entry.date.isoformat(), entry.recipe.title
+        )
 
     return [
         PlanEntryOut(date=e.date.isoformat(), recipe_id=e.recipe_id, recipe_title=e.recipe.title)
@@ -126,7 +175,8 @@ async def swap_day(entry_date: str, recipe_id: int, db: Session = Depends(get_db
         raise HTTPException(404, "Kein Plan-Eintrag für dieses Datum")
     entry.recipe_id = recipe_id
     db.commit()
-    await ha_client.upsert_calendar_event(entry_date, entry.recipe.title)
+    settings = get_settings(db)
+    await ha_client.upsert_calendar_event(settings.calendar_entity, entry_date, entry.recipe.title)
     return {"status": "ok"}
 
 
@@ -146,5 +196,9 @@ async def push_shopping_list(start: str, db: Session = Depends(get_db)):
         raise HTTPException(400, "Kein Wochenplan vorhanden")
 
     items = aggregate_shopping_list(db, entries)
-    await ha_client.add_shopping_items(items)
+    settings = get_settings(db)
+    await ha_client.add_shopping_items(settings.todo_entity, items)
     return {"items_added": items}
+
+
+app.mount("/", StaticFiles(directory="static", html=True), name="static")
