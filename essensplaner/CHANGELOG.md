@@ -3,6 +3,16 @@
 Alle nennenswerten Änderungen an diesem Add-on werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.2.1] - 2026-08-29
+
+### Geändert
+
+- DB-Speicherort von `/data/essensplaner.db` auf `/share/essensplaner/essensplaner.db`
+  verschoben. `/data` wird vom Supervisor beim Deinstallieren des Add-ons gelöscht,
+  `/share` (bereits über `map: share:rw` gemountet) übersteht das. Damit gehen
+  Rezepte/Wochenplan nicht mehr verloren, wenn das Add-on für ein Update
+  deinstalliert und neu installiert werden muss.
+
 ## [0.2.0] - 2026-08-29
 
 ### Hinzugefügt

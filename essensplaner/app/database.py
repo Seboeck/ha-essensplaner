@@ -4,7 +4,10 @@ from sqlalchemy.orm import sessionmaker
 
 from models import Base
 
-DB_PATH = os.environ.get("DB_PATH", "/data/essensplaner.db")
+# /share übersteht Add-on-Deinstallation/-Neuinstallation (anders als /data,
+# das der Supervisor beim Deinstallieren absichtlich löscht).
+DB_PATH = os.environ.get("DB_PATH", "/share/essensplaner/essensplaner.db")
+os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 engine = create_engine(f"sqlite:///{DB_PATH}", connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
