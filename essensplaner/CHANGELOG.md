@@ -3,6 +3,16 @@
 Alle nennenswerten Änderungen an diesem Add-on werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.5.0] - 2026-08-30
+
+### Hinzugefügt
+
+- Foto-Import per Claude Vision: Rezeptfoto hochladen, Claude Vision erkennt
+  Titel/Zutaten/Anleitung strukturiert; Review-Formular vor dem Speichern
+  ist Pflicht (Vorbefüllung, keine automatische Übernahme).
+- Einstellungen: Anthropic-API-Key hinterlegen (maskiert angezeigt,
+  setzen/entfernen), wird für den Foto-Import verwendet.
+
 ## [0.4.0] - 2026-08-30
 
 ### Hinzugefügt

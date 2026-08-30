@@ -1,5 +1,5 @@
 name: "Essensplaner"
-version: "0.4.0"
+version: "0.5.0"
 slug: "essensplaner"
 description: "Rezeptverwaltung, Wochenplanung und Einkaufsliste mit Home-Assistant-Anbindung (Kalender, To-do/Bring!, input_select)"
 url: "https://github.com/Seboeck/ha-essensplaner"
