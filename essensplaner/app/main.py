@@ -332,31 +332,60 @@ RECIPE_EXTRACTION_TOOL = {
 }
 
 RECIPE_EXTRACTION_SYSTEM_PROMPT = (
-    "Du liest Kochrezepte von Fotos (gedruckte Rezeptkarten oder Handschrift) und gibst "
-    "sie strukturiert zurück. Bei Unsicherheiten (v.a. bei Handschrift) wähle die "
+    "Du liest Kochrezepte von Fotos (gedruckte Rezeptkarten oder Handschrift) oder PDFs und "
+    "gibst sie strukturiert zurück. Bei Unsicherheiten (v.a. bei Handschrift) wähle die "
     "plausibelste Lesart – die Daten werden vor dem Speichern von einem Menschen geprüft. "
     "Mengen als Zahl im amount-Feld (z.B. 0.5 für 1/2), die Einheit separat im unit-Feld. "
-    "base_servings: Zahl laut Rezept, sonst 4."
+    "base_servings: Zahl laut Rezept, sonst 4. Falls mehrere Bilder oder Seiten angehängt "
+    "sind, gehören sie zu ein und demselben Rezept (z.B. Vorder-/Rückseite einer Karte oder "
+    "ein mehrseitiges Rezept) – kombiniere sie zu einem einzigen Ergebnis."
 )
+
+# Anthropic-Vision unterstützt sowohl Bilder als auch PDFs (als "document"-Content-Block) und
+# mehrere Dateien in einer Anfrage – nützlich, wenn ein Rezept nicht auf eine Seite/ein Foto passt.
+IMPORT_MEDIA_TYPES = {
+    "image/jpeg": "image",
+    "image/png": "image",
+    "image/webp": "image",
+    "image/heic": "image",
+    "image/heif": "image",
+    "application/pdf": "document",
+}
 
 
 @app.post("/api/recipes/import-photo", response_model=RecipeIn)
-async def import_recipe_photo(file: UploadFile = File(...), db: Session = Depends(get_db)):
+async def import_recipe_photo(files: list[UploadFile] = File(...), db: Session = Depends(get_db)):
     """
-    Nimmt ein Foto einer Rezeptkarte oder eines handschriftlichen Rezepts entgegen,
-    erkennt die Daten per Claude Vision und gibt sie als Entwurf zurück – Review vor
-    dem Speichern ist Pflicht (besonders wichtig bei handschriftlichen Rezepten).
+    Nimmt ein oder mehrere Fotos/PDFs einer Rezeptkarte oder eines handschriftlichen Rezepts
+    entgegen (z.B. mehrere Seiten, wenn ein Rezept nicht auf ein Bild passt), erkennt die
+    Daten per Claude Vision und gibt sie als Entwurf zurück – Review vor dem Speichern ist
+    Pflicht (besonders wichtig bei handschriftlichen Rezepten).
     """
     settings = get_settings(db)
     if not settings.anthropic_api_key:
         raise HTTPException(400, "Bitte zuerst einen Anthropic API-Key in den Einstellungen hinterlegen.")
+    if not files:
+        raise HTTPException(400, "Bitte mindestens ein Bild oder PDF hochladen.")
 
-    media_type = file.content_type or "image/jpeg"
-    if not media_type.startswith("image/"):
-        raise HTTPException(400, "Bitte ein Bild hochladen (JPEG, PNG, HEIC, ...).")
-
-    image_bytes = await file.read()
-    image_b64 = base64.standard_b64encode(image_bytes).decode("utf-8")
+    content_blocks = []
+    for file in files:
+        media_type = file.content_type or ""
+        block_type = IMPORT_MEDIA_TYPES.get(media_type)
+        if not block_type:
+            raise HTTPException(
+                400,
+                f"Nicht unterstützter Dateityp bei '{file.filename}': {media_type or 'unbekannt'}. "
+                "Erlaubt sind Bilder (JPEG, PNG, WebP, HEIC) und PDF.",
+            )
+        data_b64 = base64.standard_b64encode(await file.read()).decode("utf-8")
+        content_blocks.append({
+            "type": block_type,
+            "source": {"type": "base64", "media_type": media_type, "data": data_b64},
+        })
+    content_blocks.append({
+        "type": "text",
+        "text": "Erkenne dieses Rezept und gib die strukturierten Daten zurück.",
+    })
 
     client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
     try:
@@ -367,16 +396,7 @@ async def import_recipe_photo(file: UploadFile = File(...), db: Session = Depend
             tools=[RECIPE_EXTRACTION_TOOL],
             tool_choice={"type": "tool", "name": "recipe_data"},
             system=RECIPE_EXTRACTION_SYSTEM_PROMPT,
-            messages=[{
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image",
-                        "source": {"type": "base64", "media_type": media_type, "data": image_b64},
-                    },
-                    {"type": "text", "text": "Erkenne dieses Rezept und gib die strukturierten Daten zurück."},
-                ],
-            }],
+            messages=[{"role": "user", "content": content_blocks}],
         )
     except anthropic.AuthenticationError:
         raise HTTPException(401, "Anthropic API-Key ist ungültig.")

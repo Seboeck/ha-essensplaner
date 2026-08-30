@@ -3,6 +3,15 @@
 Alle nennenswerten Änderungen an diesem Add-on werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.7.0] - 2026-08-30
+
+### Hinzugefügt
+
+- Foto-Import akzeptiert jetzt auch PDF-Dateien (nicht mehr nur Bilder).
+- Foto/PDF-Import unterstützt Mehrfachauswahl: mehrere Bilder/Seiten (z.B.
+  Vorder-/Rückseite einer Rezeptkarte oder ein mehrseitiges Rezept) werden in
+  einer Anfrage an Claude Vision zu einem einzigen Rezept zusammengeführt.
+
 ## [0.6.0] - 2026-08-30
 
 ### Hinzugefügt
