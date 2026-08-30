@@ -289,9 +289,10 @@
       <button id="export-all" class="secondary">⭳ Alle exportieren</button>
       <button id="import-trigger" class="secondary">⭱ JSON importieren</button>
       <input type="file" id="import-file" accept="application/json,.json">
-      <button id="photo-import-trigger" class="secondary">📷 Foto-Import</button>
-      <input type="file" id="photo-import-file" accept="image/*">
+      <button id="photo-import-trigger" class="secondary">📷 Foto/PDF-Import</button>
+      <input type="file" id="photo-import-file" accept="image/*,application/pdf" multiple>
     </div>
+    <p class="hint">Foto/PDF-Import: mehrere Dateien möglich (z.B. Vorder-/Rückseite oder mehrseitige Rezepte) – werden zu einem Rezept zusammengeführt.</p>
     <div id="import-msg" class="msg"></div>
     <div id="import-conflicts" class="card" style="display:none;">
       <p class="recipe-title">Import: Duplikate gefunden</p>
@@ -790,26 +791,26 @@
       }
     }
 
-    let pendingPhotoImportFile = null;
+    let pendingPhotoImportFiles = null;
 
     photoImportFile.addEventListener('change', async () => {
-      const file = photoImportFile.files[0];
-      if (!file) return;
+      const files = [...photoImportFile.files];
+      if (!files.length) return;
       photoReview.style.display = 'none';
-      showPhotoMsg('Foto wird analysiert …', true);
+      showPhotoMsg(files.length > 1 ? 'Dateien werden analysiert …' : 'Datei wird analysiert …', true);
       try {
         const formData = new FormData();
-        formData.append('file', file);
+        files.forEach(f => formData.append('files', f));
         const res = await fetch('api/recipes/import-photo', { method: 'POST', body: formData });
         if (!res.ok) throw new Error(await res.text());
         const recipe = await res.json();
-        pendingPhotoImportFile = file;
+        pendingPhotoImportFiles = files;
         fillReviewForm(recipe);
         photoImportMsg.className = 'msg';
         photoReview.style.display = 'block';
       } catch (e) {
-        pendingPhotoImportFile = null;
-        showPhotoMsg('Fehler beim Foto-Import: ' + e.message, false);
+        pendingPhotoImportFiles = null;
+        showPhotoMsg('Fehler beim Foto/PDF-Import: ' + e.message, false);
       } finally {
         photoImportFile.value = '';
       }
@@ -818,7 +819,7 @@
     document.getElementById('pr-cancel').addEventListener('click', () => {
       photoReview.style.display = 'none';
       photoImportMsg.className = 'msg';
-      pendingPhotoImportFile = null;
+      pendingPhotoImportFiles = null;
     });
 
     document.getElementById('pr-save').addEventListener('click', async () => {
@@ -857,12 +858,13 @@
         if (!res.ok) throw new Error(await res.text());
         const saved = await res.json();
 
-        if (pendingPhotoImportFile) {
+        const imageFile = pendingPhotoImportFiles && pendingPhotoImportFiles.find(f => (f.type || '').startsWith('image/'));
+        if (imageFile) {
           const formData = new FormData();
-          formData.append('file', pendingPhotoImportFile);
+          formData.append('file', imageFile);
           await fetch(`api/recipes/${saved.id}/image`, { method: 'POST', body: formData });
-          pendingPhotoImportFile = null;
         }
+        pendingPhotoImportFiles = null;
 
         showPhotoMsg('Rezept gespeichert.', true);
         photoReview.style.display = 'none';
