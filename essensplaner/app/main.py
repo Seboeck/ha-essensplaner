@@ -1,13 +1,15 @@
 import base64
 from datetime import date
+from pathlib import Path
 
 import anthropic
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
+import database
 from database import init_db, get_db
-from models import Recipe, Ingredient, PlanEntry, Settings
+from models import Recipe, Ingredient, PlanEntry, Settings, FridgeItem, FridgeStaple
 from schemas import (
     RecipeIn,
     RecipeOut,
@@ -19,11 +21,24 @@ from schemas import (
     ImportConflict,
     ImportApplyIn,
     ImportApplyOut,
+    FridgeItemIn,
+    FridgeItemOut,
+    FridgeStapleIn,
 )
 import ha_client
 from planner import generate_week_plan, aggregate_shopping_list
 
 app = FastAPI(title="Essensplaner")
+
+IMAGES_DIR = Path(database.DB_PATH).parent / "images"
+IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+IMAGE_EXTENSIONS = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "image/heic": ".heic",
+    "image/heif": ".heif",
+}
 
 
 @app.on_event("startup")
@@ -140,6 +155,29 @@ def delete_recipe(recipe_id: int, db: Session = Depends(get_db)):
     db.delete(db_recipe)
     db.commit()
     return {"status": "ok"}
+
+
+@app.post("/api/recipes/{recipe_id}/image", response_model=RecipeOut)
+async def upload_recipe_image(recipe_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)):
+    db_recipe = db.query(Recipe).get(recipe_id)
+    if not db_recipe:
+        raise HTTPException(404, "Rezept nicht gefunden")
+
+    media_type = file.content_type or ""
+    ext = IMAGE_EXTENSIONS.get(media_type)
+    if not ext:
+        raise HTTPException(400, "Bitte ein Bild hochladen (JPEG, PNG, WebP, HEIC).")
+
+    for old_file in IMAGES_DIR.glob(f"{recipe_id}.*"):
+        old_file.unlink(missing_ok=True)
+
+    dest = IMAGES_DIR / f"{recipe_id}{ext}"
+    dest.write_bytes(await file.read())
+
+    db_recipe.image_path = f"/recipe-images/{recipe_id}{ext}"
+    db.commit()
+    db.refresh(db_recipe)
+    return db_recipe
 
 
 # ---------- Export / Import ----------
@@ -433,4 +471,107 @@ async def push_shopping_list(start: str, db: Session = Depends(get_db)):
     return {"items_added": items}
 
 
+# ---------- Kühlschrank ----------
+
+def _norm(name: str) -> str:
+    return name.strip().lower()
+
+
+@app.get("/api/fridge", response_model=list[FridgeItemOut])
+def list_fridge(db: Session = Depends(get_db)):
+    """
+    Kombinierte Sicht aus aktuellem Bestand (fridge_items) und Standardartikeln
+    (fridge_staples). Ein Standardartikel ohne passenden Bestandseintrag wird
+    trotzdem angezeigt, aber als 'fehlt' markiert (in_stock=False) – so bleibt
+    sichtbar, dass er eigentlich immer vorhanden sein sollte.
+    """
+    items = db.query(FridgeItem).all()
+    staples_by_norm = {_norm(s.name): s for s in db.query(FridgeStaple).all()}
+
+    result = []
+    covered = set()
+    for item in items:
+        key = _norm(item.name)
+        covered.add(key)
+        result.append(FridgeItemOut(
+            id=item.id, name=item.name, amount=item.amount, unit=item.unit,
+            is_staple=key in staples_by_norm, in_stock=True,
+        ))
+    for key, staple in staples_by_norm.items():
+        if key not in covered:
+            result.append(FridgeItemOut(
+                id=None, name=staple.name, amount=None, unit=staple.unit,
+                is_staple=True, in_stock=False,
+            ))
+
+    result.sort(key=lambda i: i.name.lower())
+    return result
+
+
+@app.post("/api/fridge/items", response_model=FridgeItemOut)
+def upsert_fridge_item(payload: FridgeItemIn, db: Session = Depends(get_db)):
+    """Legt einen Bestandsartikel an oder aktualisiert Menge/Einheit, falls der Name schon existiert."""
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(400, "Name darf nicht leer sein.")
+    item = db.query(FridgeItem).filter(FridgeItem.name.ilike(name)).first()
+    if item:
+        item.amount = payload.amount
+        item.unit = payload.unit
+    else:
+        item = FridgeItem(name=name, amount=payload.amount, unit=payload.unit)
+        db.add(item)
+    db.commit()
+    db.refresh(item)
+    is_staple = db.query(FridgeStaple).filter(FridgeStaple.name.ilike(name)).first() is not None
+    return FridgeItemOut(
+        id=item.id, name=item.name, amount=item.amount, unit=item.unit,
+        is_staple=is_staple, in_stock=True,
+    )
+
+
+@app.delete("/api/fridge/items/{item_id}")
+def remove_fridge_item(item_id: int, db: Session = Depends(get_db)):
+    """Entfernt einen Bestandsartikel (z.B. weil aufgebraucht). Eine evtl. Standardartikel-
+    Markierung bleibt bestehen, der Artikel erscheint danach als 'fehlt'."""
+    item = db.query(FridgeItem).get(item_id)
+    if not item:
+        raise HTTPException(404, "Artikel nicht gefunden")
+    db.delete(item)
+    db.commit()
+    return {"status": "ok"}
+
+
+@app.post("/api/fridge/staples", response_model=FridgeItemOut)
+def mark_fridge_staple(payload: FridgeStapleIn, db: Session = Depends(get_db)):
+    """Markiert einen Artikelnamen als Standardartikel ('sollte immer vorhanden sein')."""
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(400, "Name darf nicht leer sein.")
+    staple = db.query(FridgeStaple).filter(FridgeStaple.name.ilike(name)).first()
+    if staple:
+        staple.unit = payload.unit
+    else:
+        staple = FridgeStaple(name=name, unit=payload.unit)
+        db.add(staple)
+    db.commit()
+
+    item = db.query(FridgeItem).filter(FridgeItem.name.ilike(name)).first()
+    if item:
+        return FridgeItemOut(id=item.id, name=item.name, amount=item.amount, unit=item.unit, is_staple=True, in_stock=True)
+    return FridgeItemOut(id=None, name=name, amount=None, unit=payload.unit, is_staple=True, in_stock=False)
+
+
+@app.delete("/api/fridge/staples/by-name/{name}")
+def unmark_fridge_staple(name: str, db: Session = Depends(get_db)):
+    """Entfernt die Standardartikel-Markierung. Ein evtl. vorhandener Bestandseintrag bleibt bestehen."""
+    staple = db.query(FridgeStaple).filter(FridgeStaple.name.ilike(name)).first()
+    if not staple:
+        raise HTTPException(404, "Standardartikel nicht gefunden")
+    db.delete(staple)
+    db.commit()
+    return {"status": "ok"}
+
+
+app.mount("/recipe-images", StaticFiles(directory=str(IMAGES_DIR)), name="recipe-images")
 app.mount("/", StaticFiles(directory="static", html=True), name="static")

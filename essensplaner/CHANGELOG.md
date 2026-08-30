@@ -3,6 +3,22 @@
 Alle nennenswerten Änderungen an diesem Add-on werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.6.0] - 2026-08-30
+
+### Hinzugefügt
+
+- Rezept-Vollbildansicht: Klick auf eine Rezeptkarte öffnet statt des bisherigen
+  Ausklapp-Bereichs eine seitenfüllende Detailansicht mit Bild, Zutaten und
+  Zubereitung auf einen Blick.
+- Rezeptbilder: Vorschaubild auf der Rezeptkarte, Upload/Ersetzen eines Bilds in
+  der Detailansicht (`POST /api/recipes/{id}/image`); beim Foto-Import wird das
+  hochgeladene Foto automatisch als Rezeptbild übernommen.
+- Neuer Tab „Kühlschrank": aktueller Bestand (Name, Menge, Einheit) plus
+  „Standardartikel" (immer angezeigt, auch wenn gerade nicht vorhanden – als
+  „fehlt" markiert), als Vorbereitung auf die geplante Kühlschrank-Fotoerkennung.
+  Neue Endpunkte `GET/POST /api/fridge/items`, `DELETE /api/fridge/items/{id}`,
+  `POST /api/fridge/staples`, `DELETE /api/fridge/staples/by-name/{name}`.
+
 ## [0.5.0] - 2026-08-30
 
 ### Hinzugefügt

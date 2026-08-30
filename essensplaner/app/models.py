@@ -50,3 +50,23 @@ class PlanEntry(Base):
     recipe_id = Column(Integer, ForeignKey("recipes.id"))
 
     recipe = relationship("Recipe")
+
+
+class FridgeItem(Base):
+    """Aktuell im Kühlschrank vorhandener Artikel (manuell erfasst, später ggf. per Fotoerkennung)."""
+    __tablename__ = "fridge_items"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    amount = Column(Float, nullable=True)
+    unit = Column(String, nullable=True)
+
+
+class FridgeStaple(Base):
+    """Artikel, die immer im Kühlschrank sein sollten ('Standard'/Favorit) –
+    werden auch angezeigt, wenn gerade kein passender FridgeItem-Bestand existiert."""
+    __tablename__ = "fridge_staples"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False, unique=True)
+    unit = Column(String, nullable=True)

@@ -84,3 +84,23 @@ class ImportApplyOut(BaseModel):
     imported: int
     overwritten: int
     skipped: int
+
+
+class FridgeItemIn(BaseModel):
+    name: str
+    amount: Optional[float] = None
+    unit: Optional[str] = None
+
+
+class FridgeItemOut(BaseModel):
+    id: Optional[int] = None
+    name: str
+    amount: Optional[float] = None
+    unit: Optional[str] = None
+    is_staple: bool = False
+    in_stock: bool = True
+
+
+class FridgeStapleIn(BaseModel):
+    name: str
+    unit: Optional[str] = None
