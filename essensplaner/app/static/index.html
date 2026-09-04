@@ -280,6 +280,7 @@
   <nav class="tabs">
     <button data-tab="recipes" class="active">Rezepte</button>
     <button data-tab="fridge">Kühlschrank</button>
+    <button data-tab="offers">Angebote</button>
     <button data-tab="ingredients">Zutatenliste</button>
     <button data-tab="settings">Einstellungen</button>
   </nav>
@@ -354,6 +355,50 @@
       <div id="fridge-msg" class="msg"></div>
     </div>
     <div id="fridge-list"></div>
+  </section>
+
+  <section id="tab-offers" class="panel">
+    <div class="card">
+      <label for="offers-plz">Postleitzahl</label>
+      <input type="text" id="offers-plz" placeholder="z.B. 12345">
+      <label for="offers-kaufland-url">Kaufland-Filial-URL (Fallback, optional)</label>
+      <input type="text" id="offers-kaufland-url" placeholder="https://...">
+      <label for="offers-edeka-url">Edeka-Filial-URL (Fallback, optional)</label>
+      <input type="text" id="offers-edeka-url" placeholder="https://...">
+      <button id="offers-save-settings" class="primary">Speichern</button>
+      <div id="offers-settings-msg" class="msg"></div>
+    </div>
+
+    <div class="card">
+      <label for="watchlist-name">Merklisten-Artikel hinzufügen</label>
+      <div class="ingredient-row">
+        <input type="text" id="watchlist-name" class="ing-name" placeholder="Name">
+        <input type="text" id="watchlist-unit" class="ing-unit" placeholder="Einheit (optional)">
+      </div>
+      <button id="watchlist-add" class="primary">Hinzufügen</button>
+      <div id="watchlist-msg" class="msg"></div>
+      <div id="watchlist-list"></div>
+    </div>
+
+    <div class="card">
+      <p class="recipe-title">Quellen</p>
+      <div id="offer-sources-list"></div>
+    </div>
+
+    <div class="toolbar">
+      <select id="offers-filter-retailer">
+        <option value="">Alle Händler</option>
+        <option value="kaufland">Kaufland</option>
+        <option value="edeka">Edeka</option>
+      </select>
+      <select id="offers-filter-source">
+        <option value="">Alle Quellen</option>
+        <option value="kaufland_scraper">Kaufland-Scraper</option>
+        <option value="edeka_scraper">Edeka-Scraper</option>
+        <option value="marktguru">Marktguru</option>
+      </select>
+    </div>
+    <div id="offers-list"></div>
   </section>
 
   <section id="tab-ingredients" class="panel">
@@ -986,6 +1031,160 @@
         loadFridge();
       }
     });
+
+    // ---------- Angebote ----------
+    async function loadOfferSettings() {
+      const res = await fetch('api/settings');
+      if (!res.ok) return;
+      const s = await res.json();
+      document.getElementById('offers-plz').value = s.plz || '';
+      document.getElementById('offers-kaufland-url').value = s.kaufland_store_url || '';
+      document.getElementById('offers-edeka-url').value = s.edeka_store_url || '';
+    }
+
+    document.getElementById('offers-save-settings').addEventListener('click', async () => {
+      const msg = document.getElementById('offers-settings-msg');
+      const current = await (await fetch('api/settings')).json();
+      try {
+        const res = await fetch('api/settings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            calendar_entity: current.calendar_entity,
+            todo_entity: current.todo_entity,
+            plz: document.getElementById('offers-plz').value.trim() || null,
+            kaufland_store_url: document.getElementById('offers-kaufland-url').value.trim() || null,
+            edeka_store_url: document.getElementById('offers-edeka-url').value.trim() || null,
+          }),
+        });
+        if (!res.ok) throw new Error(await res.text());
+        msg.textContent = 'Gespeichert.';
+        msg.className = 'msg ok';
+      } catch (e) {
+        msg.textContent = 'Fehler: ' + e.message;
+        msg.className = 'msg err';
+      }
+    });
+
+    async function loadWatchlist() {
+      const container = document.getElementById('watchlist-list');
+      const res = await fetch('api/watchlist');
+      const items = await res.json();
+      if (!items.length) {
+        container.innerHTML = '<p class="empty">Noch keine Merklisten-Artikel.</p>';
+        return;
+      }
+      container.innerHTML = items.map(i => `
+        <div class="card fridge-item">
+          <p class="recipe-title">${escapeHtml(i.name)}</p>
+          <p class="recipe-meta">${i.unit ? escapeHtml(i.unit) : '&nbsp;'}</p>
+          <button class="secondary" data-remove-watchlist="${i.id}">Entfernen</button>
+        </div>`).join('');
+    }
+
+    document.getElementById('watchlist-add').addEventListener('click', async () => {
+      const nameInput = document.getElementById('watchlist-name');
+      const unitInput = document.getElementById('watchlist-unit');
+      const name = nameInput.value.trim();
+      if (!name) return;
+      await fetch('api/watchlist', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, unit: unitInput.value.trim() || null }),
+      });
+      nameInput.value = '';
+      unitInput.value = '';
+      loadWatchlist();
+    });
+
+    document.getElementById('watchlist-list').addEventListener('click', async (e) => {
+      const btn = e.target.closest('[data-remove-watchlist]');
+      if (!btn) return;
+      await fetch(`api/watchlist/${btn.dataset.removeWatchlist}`, { method: 'DELETE' });
+      loadWatchlist();
+    });
+
+    async function loadOfferSources() {
+      const container = document.getElementById('offer-sources-list');
+      const res = await fetch('api/offers/sources');
+      const sources = await res.json();
+      container.innerHTML = sources.map(s => `
+        <div class="card fridge-item">
+          <p class="recipe-title">${escapeHtml(s.source)}</p>
+          <p class="recipe-meta">${s.enabled ? 'aktiv' : 'deaktiviert'} — zuletzt: ${escapeHtml(s.last_status || '-')}</p>
+          <div class="fridge-actions">
+            <button class="secondary" data-toggle-source="${s.source}" data-enabled="${s.enabled}">${s.enabled ? 'Deaktivieren' : 'Aktivieren'}</button>
+            <button class="secondary" data-refresh-source="${s.source}">Jetzt aktualisieren</button>
+          </div>
+        </div>`).join('');
+    }
+
+    document.getElementById('offer-sources-list').addEventListener('click', async (e) => {
+      const toggleBtn = e.target.closest('[data-toggle-source]');
+      const refreshBtn = e.target.closest('[data-refresh-source]');
+      if (toggleBtn) {
+        const enabled = toggleBtn.dataset.enabled === 'true';
+        await fetch(`api/offers/sources/${toggleBtn.dataset.toggleSource}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled: !enabled }),
+        });
+        loadOfferSources();
+      } else if (refreshBtn) {
+        refreshBtn.disabled = true;
+        refreshBtn.textContent = 'Läuft...';
+        try {
+          await fetch(`api/offers/refresh/${refreshBtn.dataset.refreshSource}`, { method: 'POST' });
+        } finally {
+          loadOfferSources();
+          loadOffers();
+        }
+      }
+    });
+
+    async function loadOffers() {
+      const container = document.getElementById('offers-list');
+      const retailer = document.getElementById('offers-filter-retailer').value;
+      const source = document.getElementById('offers-filter-source').value;
+      const params = new URLSearchParams();
+      if (retailer) params.set('retailer', retailer);
+      if (source) params.set('source', source);
+
+      try {
+        const res = await fetch('api/offers?' + params.toString());
+        if (!res.ok) throw new Error(await res.text());
+        const offers = await res.json();
+        renderOffers(offers);
+      } catch (e) {
+        container.innerHTML = `<p class="empty">Fehler beim Laden: ${escapeHtml(e.message)}</p>`;
+      }
+    }
+
+    function renderOffers(offers) {
+      const container = document.getElementById('offers-list');
+      if (!offers.length) {
+        container.innerHTML = '<p class="empty">Keine Angebote gefunden. Lade oben eine Quelle manuell oder warte auf den nächsten geplanten Lauf.</p>';
+        return;
+      }
+      container.innerHTML = offers.map(o => {
+        const priceText = o.price != null ? `${o.price.toFixed(2)} €` : (o.discount_text || '');
+        const watchlistTag = o.matched_watchlist ? '<span class="tag">Merkliste</span>' : '';
+        return `
+          <div class="card fridge-item ${o.matched_watchlist ? 'missing' : ''}">
+            <p class="recipe-title">${escapeHtml(o.product_name)} <span class="recipe-meta">(${escapeHtml(o.retailer)})</span></p>
+            <p class="recipe-meta">${escapeHtml(priceText)} · gültig bis ${escapeHtml(o.valid_until)} · Quelle: ${escapeHtml(o.source)}</p>
+            ${watchlistTag}
+          </div>`;
+      }).join('');
+    }
+
+    document.getElementById('offers-filter-retailer').addEventListener('change', loadOffers);
+    document.getElementById('offers-filter-source').addEventListener('change', loadOffers);
+
+    loadOfferSettings();
+    loadWatchlist();
+    loadOfferSources();
+    loadOffers();
 
     loadRecipes();
     loadSettings();
