@@ -1113,8 +1113,8 @@
           <p class="recipe-title">${escapeHtml(s.source)}</p>
           <p class="recipe-meta">${s.enabled ? 'aktiv' : 'deaktiviert'} — zuletzt: ${escapeHtml(s.last_status || '-')}</p>
           <div class="fridge-actions">
-            <button class="secondary" data-toggle-source="${s.source}" data-enabled="${s.enabled}">${s.enabled ? 'Deaktivieren' : 'Aktivieren'}</button>
-            <button class="secondary" data-refresh-source="${s.source}">Jetzt aktualisieren</button>
+            <button class="secondary" data-toggle-source="${escapeHtml(s.source)}" data-enabled="${s.enabled}">${s.enabled ? 'Deaktivieren' : 'Aktivieren'}</button>
+            <button class="secondary" data-refresh-source="${escapeHtml(s.source)}">Jetzt aktualisieren</button>
           </div>
         </div>`).join('');
     }
