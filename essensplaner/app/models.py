@@ -39,6 +39,9 @@ class Settings(Base):
     calendar_entity = Column(String, nullable=True)
     todo_entity = Column(String, nullable=True)
     anthropic_api_key = Column(String, nullable=True)
+    plz = Column(String, nullable=True)
+    kaufland_store_url = Column(String, nullable=True)
+    edeka_store_url = Column(String, nullable=True)
 
 
 class PlanEntry(Base):
@@ -70,3 +73,43 @@ class FridgeStaple(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False, unique=True)
     unit = Column(String, nullable=True)
+
+
+class Offer(Base):
+    """Ein einzelnes Angebot aus einem Connector-Lauf."""
+    __tablename__ = "offers"
+
+    id = Column(Integer, primary_key=True, index=True)
+    retailer = Column(String, nullable=False)  # kaufland | edeka
+    source = Column(String, nullable=False)  # kaufland_scraper | edeka_scraper | marktguru
+    product_name = Column(String, nullable=False)
+    description = Column(String, nullable=True)
+    price = Column(Float, nullable=True)
+    discount_text = Column(String, nullable=True)
+    valid_from = Column(Date, nullable=False)
+    valid_until = Column(Date, nullable=False)
+    notified_at = Column(String, nullable=True)  # ISO-Timestamp oder NULL
+    scraped_at = Column(String, nullable=False)  # ISO-Timestamp
+
+
+class WatchlistItem(Base):
+    """Artikel, die regelmäßig gebraucht werden, aber kein FridgeStaple sind
+    (z.B. Mehl, Waschmittel) — ergänzt FridgeStaple für die Angebots-Hervorhebung."""
+    __tablename__ = "watchlist_items"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False, unique=True)
+    unit = Column(String, nullable=True)
+
+
+class OfferSourceConfig(Base):
+    """Pro Angebots-Quelle: aktiviert, Zeitplan, letzter Lauf."""
+    __tablename__ = "offer_source_configs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    source = Column(String, nullable=False, unique=True)  # kaufland_scraper | edeka_scraper | marktguru
+    enabled = Column(Boolean, default=True)
+    schedule_weekday = Column(Integer, nullable=True)  # 0=Montag..6=Sonntag
+    schedule_hour = Column(Integer, nullable=True)  # 0-23
+    last_run_at = Column(String, nullable=True)  # ISO-Timestamp
+    last_status = Column(String, nullable=True)  # "ok" oder Fehlertext
