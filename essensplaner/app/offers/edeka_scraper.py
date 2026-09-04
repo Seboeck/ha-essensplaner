@@ -12,11 +12,17 @@ verifiziert (Task 7, Step 5). Wichtige Erkenntnisse aus der Live-Prüfung:
   1. GET `https://www.edeka.de/maerkte/suche/?suchbegriff=<plz>` (liefert
      serverseitig gerenderte Trefferliste, keine PLZ-spezifische
      Angebotsseite),
-  2. daraus den ersten Filiale-Link `/maerkte/<id>/angebote` extrahieren
-     und diesen abrufen. Das ist genau das im Spec befürchtete Risiko:
-     ohne diesen Zwischenschritt (oder einen expliziten `store_url`)
-     bekommt man nur die bundesweite Teaser-Seite ohne filialspezifische
-     Angebote/Preise.
+  2. daraus den ersten Filiale-Link `/maerkte/<id>/angebote` INNERHALB des
+     Trefferlisten-Containers (`#results-wrapper`) extrahieren und diesen
+     abrufen. Das ist genau das im Spec befürchtete Risiko: ohne diesen
+     Zwischenschritt (oder einen expliziten `store_url`) bekommt man nur
+     die bundesweite Teaser-Seite ohne filialspezifische Angebote/Preise.
+     Der Link wird bewusst NICHT per Regex über die komplette Roh-Seite
+     gesucht (siehe `_resolve_store_offers_url`) - das würde bei einem
+     zufällig früher im HTML stehenden, unabhängigen `/maerkte/<id>/
+     angebote`-Link (z.B. ein "Mein Markt"-Schnellzugriff im Header) still
+     eine völlig unabhängige Filiale zurückgeben, die nichts mit der
+     gesuchten PLZ zu tun hat.
 - Die Seite ist serverseitig gerendert (Phoenix LiveView SSR) — ein
   Headless-Browser ist NICHT nötig, ein einfacher `httpx.get()` liefert
   bereits das vollständige HTML mit allen Angeboten.
@@ -51,6 +57,13 @@ SOURCE = "edeka_scraper"
 _STORE_SEARCH_URL = "https://www.edeka.de/maerkte/suche/?suchbegriff={plz}"
 _STORE_OFFERS_URL = "https://www.edeka.de/maerkte/{store_id}/angebote"
 _STORE_OFFERS_URL_RE = re.compile(r"/maerkte/(\d+)/angebote")
+# Am 2026-09-04 live verifiziert (PLZ 10115): die Marktsuche-Ergebnisliste
+# steckt serverseitig gerendert in genau diesem Container
+# (`<section id="results-wrapper" aria-labelledby="search-results-headline">`),
+# eindeutig auf der Seite. Header/Nav (z.B. ein "Mein Markt"-Schnellzugriff-
+# Link) liegt VOR diesem Container im HTML und wird durch das Scoping auf
+# diese ID ausgeschlossen.
+_STORE_SEARCH_RESULTS_SELECTOR = "#results-wrapper"
 
 _WEEK_RANGE_RE = re.compile(
     r"G[uü]ltig vom\s*(\d{1,2})\.(\d{1,2})\.(\d{4})\s*bis zum\s*(\d{1,2})\.(\d{1,2})\.(\d{4})",
@@ -152,12 +165,35 @@ def _parse_offers_html(html: str) -> list[OfferData]:
 def _resolve_store_offers_url(plz: str) -> str:
     """Löst eine PLZ über die Marktsuche auf die Angebotsseite der ersten
     gefundenen Filiale auf (Marktsuche sortiert nach Entfernung). Wirft, wenn
-    keine Filiale gefunden wurde - Fehler werden nicht verschluckt."""
+    keine Filiale gefunden wurde - Fehler werden nicht verschluckt.
+
+    Der Filiale-Link wird NICHT per Regex über den kompletten Seiten-Text
+    gesucht, sondern gezielt innerhalb des Trefferlisten-Containers
+    (`#results-wrapper`, siehe Modul-Docstring). Ein früherer Ansatz, der
+    `/maerkte/(\\d+)/angebote` über response.text gesucht hat, hätte den
+    ERSTEN Treffer irgendwo auf der Seite genommen - z.B. einen "Mein
+    Markt"-Schnellzugriff-Link im Header, der mit der eigentlichen
+    PLZ-Suche nichts zu tun hat, und damit still eine völlig falsche
+    Filiale zurückgeben können (nicht nur "nicht garantiert die nächste",
+    sondern potenziell eine völlig unabhängige Filiale ohne jeden Bezug
+    zur gesuchten PLZ). Fehlt der Container (Seitenstruktur geändert),
+    wird das als Fehler behandelt statt stillschweigend auf die komplette
+    Seite zurückzufallen."""
     response = httpx.get(_STORE_SEARCH_URL.format(plz=plz), timeout=15, follow_redirects=True)
     response.raise_for_status()
-    match = _STORE_OFFERS_URL_RE.search(response.text)
-    if not match:
+    soup = BeautifulSoup(response.text, "html.parser")
+    results_container = soup.select_one(_STORE_SEARCH_RESULTS_SELECTOR)
+    if results_container is None:
+        raise ValueError(
+            f"Trefferlisten-Container '{_STORE_SEARCH_RESULTS_SELECTOR}' der "
+            f"Marktsuche für PLZ {plz} nicht gefunden - Seitenstruktur hat "
+            f"sich vermutlich geändert (kein automatischer Fallback auf die "
+            f"gesamte Seite, um keine falsche Filiale zu riskieren)."
+        )
+    link = results_container.find("a", href=_STORE_OFFERS_URL_RE)
+    if link is None:
         raise ValueError(f"Keine Edeka-Filiale für PLZ {plz} gefunden (Marktsuche lieferte keinen Treffer)")
+    match = _STORE_OFFERS_URL_RE.search(link["href"])
     return _STORE_OFFERS_URL.format(store_id=match.group(1))
 
 

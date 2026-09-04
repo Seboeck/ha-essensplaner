@@ -1,0 +1,28 @@
+<html><body>
+<header>
+  <nav>
+    <!-- Decoy: a "Mein Markt" / favorite-store shortcut link elsewhere on the
+         page that happens to match the same /maerkte/<id>/angebote shape but
+         has nothing to do with the PLZ search below. Regression fixture for
+         the bug where _resolve_store_offers_url regex-searched the raw page
+         text and could grab this instead of the real search result. -->
+    <a href="/maerkte/999999/angebote">Mein Markt</a>
+  </nav>
+</header>
+<main>
+  <div aria-live="polite" class="sr-only">
+    <span>Anzahl der Suchergebnisse: 2</span>
+  </div>
+  <section id="results-wrapper" aria-labelledby="search-results-headline">
+    <h2 id="search-results-headline">Suchergebnisse (2)</h2>
+    <ul>
+      <li class="border-lever-b">
+        <a href="/maerkte/402574/angebote">EDEKA Sapphire, Berlin</a>
+      </li>
+      <li class="border-lever-b">
+        <a href="/maerkte/402999/angebote">EDEKA Beispiel, Berlin</a>
+      </li>
+    </ul>
+  </section>
+</main>
+</body></html>

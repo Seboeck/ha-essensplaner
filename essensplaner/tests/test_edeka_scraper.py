@@ -1,9 +1,23 @@
 from datetime import date
 from pathlib import Path
 
-from offers.edeka_scraper import _parse_offers_html
+import pytest
+
+from offers import edeka_scraper
+from offers.edeka_scraper import _parse_offers_html, _resolve_store_offers_url
 
 FIXTURE = (Path(__file__).parent / "fixtures" / "edeka_sample.html").read_text(encoding="utf-8")
+STORE_SEARCH_FIXTURE = (
+    Path(__file__).parent / "fixtures" / "edeka_store_search_sample.html"
+).read_text(encoding="utf-8")
+
+
+class _FakeResponse:
+    def __init__(self, text: str):
+        self.text = text
+
+    def raise_for_status(self) -> None:
+        pass
 
 
 def test_parse_offers_html_extracts_all_items():
@@ -44,3 +58,24 @@ def test_parse_offers_html_skips_items_without_week_validity():
     </article>
     """
     assert _parse_offers_html(html) == []
+
+
+def test_resolve_store_offers_url_ignores_link_outside_results_container(monkeypatch):
+    # Regression test for a bug where the store link was found via
+    # regex-search over the ENTIRE raw page text, which could match an
+    # unrelated link (e.g. a "Mein Markt" shortcut in the header) that
+    # happens to appear before the actual search-results list in source
+    # order. The fixture places exactly such a decoy link before
+    # `#results-wrapper`, pointing at store 999999, while the real search
+    # result for the PLZ is store 402574 inside the results container.
+    monkeypatch.setattr(edeka_scraper.httpx, "get", lambda *a, **k: _FakeResponse(STORE_SEARCH_FIXTURE))
+    url = _resolve_store_offers_url("10115")
+    assert url == "https://www.edeka.de/maerkte/402574/angebote"
+
+
+def test_resolve_store_offers_url_raises_when_results_container_missing(monkeypatch):
+    monkeypatch.setattr(
+        edeka_scraper.httpx, "get", lambda *a, **k: _FakeResponse("<html><body>keine Trefferliste hier</body></html>")
+    )
+    with pytest.raises(ValueError, match="Trefferlisten-Container"):
+        _resolve_store_offers_url("10115")
