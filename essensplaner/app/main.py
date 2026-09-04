@@ -57,6 +57,11 @@ def on_startup():
     app.state.scheduler = start_scheduler()
 
 
+@app.on_event("shutdown")
+def on_shutdown():
+    app.state.scheduler.shutdown(wait=False)
+
+
 def get_settings(db: Session) -> Settings:
     settings = db.query(Settings).get(1)
     if not settings:
