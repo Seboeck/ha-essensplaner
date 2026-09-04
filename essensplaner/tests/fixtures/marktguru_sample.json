@@ -1,0 +1,60 @@
+{
+  "totalResults": 4,
+  "skippedResults": 0,
+  "results": [
+    {
+      "id": 24670001,
+      "description": "Gekühlt. Je 250 g",
+      "price": 1.49,
+      "oldPrice": 1.75,
+      "referencePrice": 5.96,
+      "advertisers": [
+        {"uniqueName": "edeka", "id": "retailers/1", "name": "EDEKA", "industryId": 1023}
+      ],
+      "product": {"id": 1, "name": "Butter 250g", "description": null},
+      "validityDates": [
+        {"from": "2026-09-06T22:00:00Z", "to": "2026-09-12T21:59:59Z"}
+      ]
+    },
+    {
+      "id": 24670002,
+      "description": "500 g Packung",
+      "price": 4.99,
+      "oldPrice": null,
+      "referencePrice": 9.98,
+      "advertisers": [
+        {"uniqueName": "kaufland", "id": "retailers/2", "name": "Kaufland", "industryId": 1023}
+      ],
+      "product": {"id": 2, "name": "Kaffee gemahlen 500g", "description": null},
+      "validityDates": [
+        {"from": "2026-09-06T22:00:00Z", "to": "2026-09-12T21:59:59Z"}
+      ]
+    },
+    {
+      "id": 24670003,
+      "description": "20 Waschladungen",
+      "price": 6.99,
+      "oldPrice": null,
+      "referencePrice": 0.35,
+      "advertisers": [
+        {"uniqueName": "rewe", "id": "retailers/3", "name": "REWE", "industryId": 1042}
+      ],
+      "product": {"id": 3, "name": "Waschmittel 20WL", "description": null},
+      "validityDates": [
+        {"from": "2026-09-06T22:00:00Z", "to": "2026-09-12T21:59:59Z"}
+      ]
+    },
+    {
+      "id": 24670004,
+      "description": "ohne Gültigkeitszeitraum",
+      "price": 2.49,
+      "oldPrice": null,
+      "referencePrice": null,
+      "advertisers": [
+        {"uniqueName": "kaufland", "id": "retailers/2", "name": "Kaufland", "industryId": 1023}
+      ],
+      "product": {"id": 4, "name": "Ohne Datum", "description": null},
+      "validityDates": []
+    }
+  ]
+}
