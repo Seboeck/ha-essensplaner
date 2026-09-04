@@ -32,6 +32,7 @@ app = FastAPI(title="Essensplaner")
 
 IMAGES_DIR = Path(database.DB_PATH).parent / "images"
 IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+STATIC_DIR = Path(__file__).resolve().parent / "static"
 IMAGE_EXTENSIONS = {
     "image/jpeg": ".jpg",
     "image/png": ".png",
@@ -594,4 +595,4 @@ def unmark_fridge_staple(name: str, db: Session = Depends(get_db)):
 
 
 app.mount("/recipe-images", StaticFiles(directory=str(IMAGES_DIR)), name="recipe-images")
-app.mount("/", StaticFiles(directory="static", html=True), name="static")
+app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
