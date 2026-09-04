@@ -1,12 +1,15 @@
 """Führt einen einzelnen Connector aus, ersetzt dessen alte Offer-Zeilen
 und schreibt Erfolg/Fehler in OfferSourceConfig. Ein Lauf betrifft immer
 nur die eigene `source` — andere Quellen bleiben unberührt."""
+import asyncio
 from datetime import datetime
 
 from sqlalchemy.orm import Session
 
+import ha_client
 from models import Offer, OfferSourceConfig
 from offers import kaufland_scraper, edeka_scraper, marktguru_connector
+from offers.matching import is_watchlist_match
 
 CONNECTORS = {
     kaufland_scraper.SOURCE: kaufland_scraper,
@@ -55,6 +58,19 @@ def run_source(source: str, db: Session, plz: str, store_url: str | None = None)
             valid_until=offer_data.valid_until,
             scraped_at=now,
         ))
+
+    db.flush()  # ohne Flush sieht die folgende Query die eben hinzugefügten Zeilen nicht (autoflush ist in Tests aus)
+    new_offers = db.query(Offer).filter(Offer.source == source, Offer.notified_at.is_(None)).all()
+    matched = [o for o in new_offers if is_watchlist_match(o.product_name, db)]
+    if matched:
+        lines = [f"- {o.product_name}" + (f" ({o.discount_text})" if o.discount_text else "") for o in matched]
+        message = f"{len(matched)} neue Angebote zu deiner Merkliste ({source}):\n" + "\n".join(lines)
+        try:
+            asyncio.run(ha_client.notify(message))
+        except Exception:
+            pass  # Benachrichtigung ist ein Nice-to-have, darf den Lauf nicht scheitern lassen
+        for offer in matched:
+            offer.notified_at = now
 
     config.last_run_at = now
     config.last_status = "ok"

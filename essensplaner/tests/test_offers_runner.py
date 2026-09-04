@@ -1,7 +1,7 @@
 from datetime import date
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
-from models import Offer, OfferSourceConfig
+from models import FridgeStaple, Offer, OfferSourceConfig
 from offers.base import OfferData
 from offers.runner import run_source
 
@@ -56,3 +56,35 @@ def test_run_source_unknown_source_raises(client):
     db = _db(client)
     with pytest.raises(ValueError):
         run_source("unknown_source", db, plz="12345")
+
+
+def test_run_source_notifies_and_marks_watchlist_matches(client):
+    db = _db(client)
+    db.add(FridgeStaple(name="Gouda"))
+    db.commit()
+
+    fake_offers = [OfferData(retailer="kaufland", product_name="Gouda Scheiben 250g",
+                              valid_from=date(2026, 9, 7), valid_until=date(2026, 9, 13))]
+    with patch("offers.kaufland_scraper.fetch_offers", return_value=fake_offers), \
+         patch("ha_client.notify", new_callable=AsyncMock) as mock_notify:
+        run_source("kaufland_scraper", db, plz="12345")
+
+    mock_notify.assert_called_once()
+    offer = db.query(Offer).filter(Offer.source == "kaufland_scraper").first()
+    assert offer.notified_at is not None
+
+
+def test_run_source_does_not_renotify_same_offer_on_next_run(client):
+    db = _db(client)
+    db.add(FridgeStaple(name="Gouda"))
+    db.commit()
+    fake_offers = [OfferData(retailer="kaufland", product_name="Gouda",
+                              valid_from=date(2026, 9, 7), valid_until=date(2026, 9, 13))]
+
+    with patch("offers.kaufland_scraper.fetch_offers", return_value=fake_offers), \
+         patch("ha_client.notify", new_callable=AsyncMock) as mock_notify:
+        run_source("kaufland_scraper", db, plz="12345")
+        run_source("kaufland_scraper", db, plz="12345")
+
+    # Zweiter Lauf ersetzt die Offer-Zeile komplett (neue Zeile ohne notified_at) -> erneuter Aufruf ist korrekt
+    assert mock_notify.call_count == 2
