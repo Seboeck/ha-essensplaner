@@ -2,9 +2,46 @@ import json
 from datetime import date
 from pathlib import Path
 
-from offers.marktguru_connector import _compute_discount_text, _parse_response, _parse_validity
+import httpx
+import pytest
+
+from offers import marktguru_connector
+from offers.marktguru_connector import (
+    _SEARCH_TERMS,
+    _compute_discount_text,
+    _parse_response,
+    _parse_validity,
+    fetch_offers,
+)
 
 FIXTURE = json.loads((Path(__file__).parent / "fixtures" / "marktguru_sample.json").read_text(encoding="utf-8"))
+
+
+class _FakeJsonResponse:
+    def __init__(self, payload: dict):
+        self._payload = payload
+
+    def raise_for_status(self) -> None:
+        pass
+
+    def json(self) -> dict:
+        return self._payload
+
+
+def _single_offer_payload(offer_id: int, uniqueName: str = "kaufland") -> dict:
+    return {
+        "results": [
+            {
+                "id": offer_id,
+                "description": "Testangebot",
+                "price": 1.0,
+                "oldPrice": None,
+                "advertisers": [{"uniqueName": uniqueName, "id": "retailers/x", "name": uniqueName}],
+                "product": {"id": offer_id, "name": f"Produkt {offer_id}"},
+                "validityDates": [{"from": "2026-09-06T22:00:00Z", "to": "2026-09-12T21:59:59Z"}],
+            }
+        ]
+    }
 
 
 def test_parse_response_filters_to_kaufland_and_edeka():
@@ -55,3 +92,53 @@ def test_parse_validity_uses_only_first_entry_and_drops_time():
 def test_parse_validity_returns_none_for_empty_list():
     assert _parse_validity([]) is None
     assert _parse_validity(None) is None
+
+
+def test_fetch_offers_merges_results_when_all_terms_succeed(monkeypatch):
+    monkeypatch.setattr(marktguru_connector, "_get_api_keys", lambda: ("key", "clientkey"))
+
+    def fake_get(url, headers=None, params=None, timeout=None):
+        term = params["q"]
+        offer_id = 1000 + _SEARCH_TERMS.index(term)
+        return _FakeJsonResponse(_single_offer_payload(offer_id))
+
+    monkeypatch.setattr(marktguru_connector.httpx, "get", fake_get)
+
+    offers = fetch_offers("10115")
+    # Ein Angebot pro Suchbegriff, alle mit unterschiedlicher id -> keine Dedup-Kollision.
+    assert len(offers) == len(_SEARCH_TERMS)
+    assert all(o.retailer == "kaufland" for o in offers)
+
+
+def test_fetch_offers_returns_partial_results_when_some_terms_fail(monkeypatch):
+    monkeypatch.setattr(marktguru_connector, "_get_api_keys", lambda: ("key", "clientkey"))
+
+    def fake_get(url, headers=None, params=None, timeout=None):
+        term = params["q"]
+        if term == _SEARCH_TERMS[0]:
+            raise httpx.TimeoutException("timed out")
+        if term == _SEARCH_TERMS[1]:
+            request = httpx.Request("GET", url)
+            response = httpx.Response(503, request=request)
+            raise httpx.HTTPStatusError("server error", request=request, response=response)
+        offer_id = 2000 + _SEARCH_TERMS.index(term)
+        return _FakeJsonResponse(_single_offer_payload(offer_id))
+
+    monkeypatch.setattr(marktguru_connector.httpx, "get", fake_get)
+
+    offers = fetch_offers("10115")
+    # Zwei von len(_SEARCH_TERMS) Begriffen fehlgeschlagen - die restlichen
+    # Treffer müssen trotzdem zurückkommen (graceful degradation), kein Raise.
+    assert len(offers) == len(_SEARCH_TERMS) - 2
+
+
+def test_fetch_offers_raises_when_all_terms_fail(monkeypatch):
+    monkeypatch.setattr(marktguru_connector, "_get_api_keys", lambda: ("key", "clientkey"))
+
+    def fake_get(url, headers=None, params=None, timeout=None):
+        raise httpx.TimeoutException("timed out")
+
+    monkeypatch.setattr(marktguru_connector.httpx, "get", fake_get)
+
+    with pytest.raises(RuntimeError, match=f"{len(_SEARCH_TERMS)} von {len(_SEARCH_TERMS)}"):
+        fetch_offers("10115")

@@ -167,16 +167,48 @@ def fetch_offers(plz: str, store_url: str | None = None) -> list[OfferData]:
     # `q` ist Pflicht (siehe Modul-Docstring) - über mehrere breite Begriffe
     # iterieren und über die Angebots-`id` deduplizieren, um eine
     # Näherung an "alle Kaufland-/Edeka-Angebote der PLZ" zu bekommen.
+    #
+    # Läuft unbeaufsichtigt als wöchentlicher Cron-Job: Ein einzelner
+    # flakiger Suchbegriff (Timeout, transientes 5xx) soll nicht den
+    # gesamten Lauf und damit alle bereits erfolgreich abgefragten
+    # Begriffe verwerfen. Fehler pro Begriff werden daher abgefangen und
+    # der Lauf wird mit den verbleibenden Begriffen fortgesetzt
+    # (graceful degradation). Nur wenn AUSNAHMSLOS jeder Begriff
+    # fehlschlägt, ist das ein echter Totalausfall und muss wie bei den
+    # anderen Connectors propagiert werden (nie still `[]` zurückgeben -
+    # das wäre nicht von "diese Woche keine Angebote" unterscheidbar).
     merged_by_id: dict[object, dict] = {}
+    failed_terms: list[tuple[str, Exception]] = []
     for term in _SEARCH_TERMS:
-        response = httpx.get(
-            _SEARCH_URL,
-            headers=headers,
-            params={"as": "web", "q": term, "limit": 50, "offset": 0, "zipCode": plz},
-            timeout=15,
-        )
-        response.raise_for_status()
-        for raw in response.json().get("results") or []:
+        try:
+            response = httpx.get(
+                _SEARCH_URL,
+                headers=headers,
+                params={"as": "web", "q": term, "limit": 50, "offset": 0, "zipCode": plz},
+                timeout=15,
+            )
+            response.raise_for_status()
+            results = response.json().get("results") or []
+        except httpx.HTTPError as exc:
+            failed_terms.append((term, exc))
+            continue
+        for raw in results:
             merged_by_id[raw.get("id")] = raw
+
+    if failed_terms and len(failed_terms) == len(_SEARCH_TERMS):
+        last_term, last_exc = failed_terms[-1]
+        raise RuntimeError(
+            f"Marktguru-Abfrage komplett fehlgeschlagen: alle "
+            f"{len(_SEARCH_TERMS)} von {len(_SEARCH_TERMS)} Suchbegriffen "
+            f"schlugen fehl (zuletzt '{last_term}': {last_exc})."
+        ) from last_exc
+
+    if failed_terms:
+        print(
+            f"[marktguru_connector] {len(failed_terms)} von "
+            f"{len(_SEARCH_TERMS)} Suchbegriffen fehlgeschlagen "
+            f"({', '.join(term for term, _ in failed_terms)}); fahre mit "
+            f"den übrigen {len(_SEARCH_TERMS) - len(failed_terms)} Treffern fort."
+        )
 
     return _parse_response({"results": list(merged_by_id.values())})
