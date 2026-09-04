@@ -52,3 +52,22 @@ def test_no_false_positives_unrelated_words(client):
     assert is_watchlist_match("Paprika rot gemahlen", db) is False
     assert match_score("Kaffee", "Käse") < 80
     assert match_score("Paprika rot", "Pizza") < 80
+
+
+def test_substring_check_guarded_by_length(client):
+    # Regression test: short watchlist items (< 4 chars) should NOT match
+    # unrelated products that contain them as substrings
+    db = _db(client)
+    db.add(FridgeStaple(name="Ei"))  # 2 chars - too short for substring matching
+    db.add(WatchlistItem(name="Öl"))  # 2 chars - too short for substring matching
+    db.commit()
+
+    # "Ei" should NOT match "Reis" even though "ei" is in "reis" as a substring
+    assert is_watchlist_match("Reis 1kg", db) is False
+    # "Öl" should NOT match "Möhre" even though "öl" is in "möhre" as a substring
+    assert is_watchlist_match("Möhre 500g", db) is False
+
+    # But 4-char names SHOULD use substring fallback: "Mehl" in "Weizenmehl"
+    db.add(WatchlistItem(name="Mehl"))  # 4 chars - exactly at boundary
+    db.commit()
+    assert is_watchlist_match("Weizenmehl Type 405", db) is True

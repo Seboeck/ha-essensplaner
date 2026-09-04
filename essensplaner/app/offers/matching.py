@@ -20,7 +20,10 @@ def find_matching_recipe_ids(product_name: str, db: Session, threshold: int = DE
         ingredient_lower = ingredient.name.lower().strip()
         # Match if fuzzy score is high OR if ingredient name is a substring of product name
         # Substring check handles German compound words (e.g., "Mehl" in "Weizenmehl")
-        if match_score(product_name, ingredient.name) >= threshold or ingredient_lower in product_lower:
+        # Guard: only apply substring check for names >= 4 chars to avoid false positives
+        # (e.g., "Ei" should not match "Reis" just because "ei" is in "reis")
+        has_substring_match = len(ingredient_lower) >= 4 and ingredient_lower in product_lower
+        if match_score(product_name, ingredient.name) >= threshold or has_substring_match:
             matched.add(ingredient.recipe_id)
     return sorted(matched)
 
@@ -33,6 +36,9 @@ def is_watchlist_match(product_name: str, db: Session, threshold: int = DEFAULT_
         name_lower = name.lower().strip()
         # Match if fuzzy score is high OR if name is a substring of product name
         # Substring check handles German compound words (e.g., "Mehl" in "Weizenmehl")
-        if match_score(product_name, name) >= threshold or name_lower in product_lower:
+        # Guard: only apply substring check for names >= 4 chars to avoid false positives
+        # (e.g., "Ei" should not match "Reis" just because "ei" is in "reis")
+        has_substring_match = len(name_lower) >= 4 and name_lower in product_lower
+        if match_score(product_name, name) >= threshold or has_substring_match:
             return True
     return False
