@@ -35,6 +35,7 @@ from schemas import (
 import ha_client
 from planner import generate_week_plan, aggregate_shopping_list
 from offers.runner import run_source, get_or_create_source_config, CONNECTORS
+from offers.scheduler import start_scheduler
 
 app = FastAPI(title="Essensplaner")
 
@@ -53,6 +54,7 @@ IMAGE_EXTENSIONS = {
 @app.on_event("startup")
 def on_startup():
     init_db()
+    app.state.scheduler = start_scheduler()
 
 
 def get_settings(db: Session) -> Settings:
@@ -669,6 +671,8 @@ def update_offer_source(source: str, payload: OfferSourceConfigUpdateIn, db: Ses
         config.schedule_hour = payload.schedule_hour
     db.commit()
     db.refresh(config)
+    from offers.scheduler import schedule_source
+    schedule_source(app.state.scheduler, config)
     return config
 
 
