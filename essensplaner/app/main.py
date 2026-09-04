@@ -9,7 +9,10 @@ from sqlalchemy.orm import Session
 
 import database
 from database import init_db, get_db
-from models import Recipe, Ingredient, PlanEntry, Settings, FridgeItem, FridgeStaple, WatchlistItem
+from models import (
+    Recipe, Ingredient, PlanEntry, Settings, FridgeItem, FridgeStaple,
+    WatchlistItem, OfferSourceConfig,
+)
 from schemas import (
     RecipeIn,
     RecipeOut,
@@ -26,9 +29,12 @@ from schemas import (
     FridgeStapleIn,
     WatchlistItemIn,
     WatchlistItemOut,
+    OfferSourceConfigOut,
+    OfferSourceConfigUpdateIn,
 )
 import ha_client
 from planner import generate_week_plan, aggregate_shopping_list
+from offers.runner import run_source, get_or_create_source_config, CONNECTORS
 
 app = FastAPI(title="Essensplaner")
 
@@ -83,6 +89,9 @@ async def read_settings(db: Session = Depends(get_db)):
         calendar_entity=settings.calendar_entity,
         todo_entity=settings.todo_entity,
         anthropic_api_key_set=bool(settings.anthropic_api_key),
+        plz=settings.plz,
+        kaufland_store_url=settings.kaufland_store_url,
+        edeka_store_url=settings.edeka_store_url,
         available_calendars=calendars,
         available_todo_lists=todo_lists,
     )
@@ -95,6 +104,12 @@ async def save_settings(payload: SettingsIn, db: Session = Depends(get_db)):
     settings.todo_entity = payload.todo_entity
     if payload.anthropic_api_key is not None:
         settings.anthropic_api_key = payload.anthropic_api_key or None
+    if payload.plz is not None:
+        settings.plz = payload.plz or None
+    if payload.kaufland_store_url is not None:
+        settings.kaufland_store_url = payload.kaufland_store_url or None
+    if payload.edeka_store_url is not None:
+        settings.edeka_store_url = payload.edeka_store_url or None
     db.commit()
     calendars = await _list_entities_safe("calendar")
     todo_lists = await _list_entities_safe("todo")
@@ -102,6 +117,9 @@ async def save_settings(payload: SettingsIn, db: Session = Depends(get_db)):
         calendar_entity=settings.calendar_entity,
         todo_entity=settings.todo_entity,
         anthropic_api_key_set=bool(settings.anthropic_api_key),
+        plz=settings.plz,
+        kaufland_store_url=settings.kaufland_store_url,
+        edeka_store_url=settings.edeka_store_url,
         available_calendars=calendars,
         available_todo_lists=todo_lists,
     )
@@ -627,6 +645,45 @@ def remove_watchlist_item(item_id: int, db: Session = Depends(get_db)):
     db.delete(item)
     db.commit()
     return {"ok": True}
+
+
+# ---------- Angebots-Quellen ----------
+
+@app.get("/api/offers/sources", response_model=list[OfferSourceConfigOut])
+def list_offer_sources(db: Session = Depends(get_db)):
+    for source in CONNECTORS:
+        get_or_create_source_config(source, db)
+    return db.query(OfferSourceConfig).order_by(OfferSourceConfig.source).all()
+
+
+@app.put("/api/offers/sources/{source}", response_model=OfferSourceConfigOut)
+def update_offer_source(source: str, payload: OfferSourceConfigUpdateIn, db: Session = Depends(get_db)):
+    if source not in CONNECTORS:
+        raise HTTPException(status_code=404, detail="Unbekannte Angebots-Quelle")
+    config = get_or_create_source_config(source, db)
+    if payload.enabled is not None:
+        config.enabled = payload.enabled
+    if payload.schedule_weekday is not None:
+        config.schedule_weekday = payload.schedule_weekday
+    if payload.schedule_hour is not None:
+        config.schedule_hour = payload.schedule_hour
+    db.commit()
+    db.refresh(config)
+    return config
+
+
+@app.post("/api/offers/refresh/{source}", response_model=OfferSourceConfigOut)
+def refresh_offer_source(source: str, db: Session = Depends(get_db)):
+    if source not in CONNECTORS:
+        raise HTTPException(status_code=404, detail="Unbekannte Angebots-Quelle")
+    settings = get_settings(db)
+    if not settings.plz:
+        raise HTTPException(status_code=400, detail="Bitte zuerst eine PLZ in den Einstellungen hinterlegen")
+    store_url = {
+        "kaufland_scraper": settings.kaufland_store_url,
+        "edeka_scraper": settings.edeka_store_url,
+    }.get(source)
+    return run_source(source, db, plz=settings.plz, store_url=store_url)
 
 
 app.mount("/recipe-images", StaticFiles(directory=str(IMAGES_DIR)), name="recipe-images")

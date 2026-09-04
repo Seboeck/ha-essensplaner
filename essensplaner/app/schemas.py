@@ -42,12 +42,18 @@ class SettingsIn(BaseModel):
     todo_entity: str
     # None = unverändert lassen, "" = Key löschen, sonst = neuen Key setzen
     anthropic_api_key: Optional[str] = None
+    plz: Optional[str] = None
+    kaufland_store_url: Optional[str] = None
+    edeka_store_url: Optional[str] = None
 
 
 class SettingsOut(BaseModel):
     calendar_entity: str
     todo_entity: str
     anthropic_api_key_set: bool = False
+    plz: Optional[str] = None
+    kaufland_store_url: Optional[str] = None
+    edeka_store_url: Optional[str] = None
     available_calendars: list[EntityOption] = []
     available_todo_lists: list[EntityOption] = []
 
