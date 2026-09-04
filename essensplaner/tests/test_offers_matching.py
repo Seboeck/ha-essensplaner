@@ -35,8 +35,8 @@ def test_is_watchlist_match_checks_staples_and_watchlist(client):
     db.commit()
 
     assert is_watchlist_match("Frische Milch 1L", db) is True
-    # token_set_ratio needs "Mehl" as a separate token to match
-    assert is_watchlist_match("Mehl Weizenmehl Type 405 1kg", db) is True
+    # Substring containment handles German compound words: "Mehl" in "Weizenmehl"
+    assert is_watchlist_match("Weizenmehl Type 405", db) is True
     assert is_watchlist_match("Klopapier 8er Pack", db) is False
 
 
