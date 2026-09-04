@@ -6,11 +6,11 @@ from sqlalchemy.orm import Session
 
 from models import Ingredient, FridgeStaple, WatchlistItem
 
-DEFAULT_THRESHOLD = 30
+DEFAULT_THRESHOLD = 80
 
 
 def match_score(a: str, b: str) -> float:
-    return fuzz.token_sort_ratio(a.lower().strip(), b.lower().strip())
+    return fuzz.token_set_ratio(a.lower().strip(), b.lower().strip())
 
 
 def find_matching_recipe_ids(product_name: str, db: Session, threshold: int = DEFAULT_THRESHOLD) -> list[int]:
