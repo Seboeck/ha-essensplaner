@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 import database
 from database import init_db, get_db
-from models import Recipe, Ingredient, PlanEntry, Settings, FridgeItem, FridgeStaple
+from models import Recipe, Ingredient, PlanEntry, Settings, FridgeItem, FridgeStaple, WatchlistItem
 from schemas import (
     RecipeIn,
     RecipeOut,
@@ -24,6 +24,8 @@ from schemas import (
     FridgeItemIn,
     FridgeItemOut,
     FridgeStapleIn,
+    WatchlistItemIn,
+    WatchlistItemOut,
 )
 import ha_client
 from planner import generate_week_plan, aggregate_shopping_list
@@ -592,6 +594,39 @@ def unmark_fridge_staple(name: str, db: Session = Depends(get_db)):
     db.delete(staple)
     db.commit()
     return {"status": "ok"}
+
+
+# ---------- Merkliste (regelmäßig benötigte Artikel, kein Kühlschrank-Bestand) ----------
+
+@app.get("/api/watchlist", response_model=list[WatchlistItemOut])
+def list_watchlist(db: Session = Depends(get_db)):
+    return db.query(WatchlistItem).order_by(WatchlistItem.name).all()
+
+
+@app.post("/api/watchlist", response_model=WatchlistItemOut)
+def add_watchlist_item(payload: WatchlistItemIn, db: Session = Depends(get_db)):
+    name = payload.name.strip()
+    existing = db.query(WatchlistItem).filter(WatchlistItem.name.ilike(name)).first()
+    if existing:
+        existing.unit = payload.unit
+        db.commit()
+        db.refresh(existing)
+        return existing
+    item = WatchlistItem(name=name, unit=payload.unit)
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    return item
+
+
+@app.delete("/api/watchlist/{item_id}")
+def remove_watchlist_item(item_id: int, db: Session = Depends(get_db)):
+    item = db.query(WatchlistItem).get(item_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Artikel nicht gefunden")
+    db.delete(item)
+    db.commit()
+    return {"ok": True}
 
 
 app.mount("/recipe-images", StaticFiles(directory=str(IMAGES_DIR)), name="recipe-images")
