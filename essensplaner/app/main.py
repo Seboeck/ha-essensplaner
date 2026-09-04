@@ -11,7 +11,7 @@ import database
 from database import init_db, get_db
 from models import (
     Recipe, Ingredient, PlanEntry, Settings, FridgeItem, FridgeStaple,
-    WatchlistItem, OfferSourceConfig,
+    WatchlistItem, OfferSourceConfig, Offer,
 )
 from schemas import (
     RecipeIn,
@@ -31,11 +31,13 @@ from schemas import (
     WatchlistItemOut,
     OfferSourceConfigOut,
     OfferSourceConfigUpdateIn,
+    OfferOut,
 )
 import ha_client
 from planner import generate_week_plan, aggregate_shopping_list
 from offers.runner import run_source, get_or_create_source_config, CONNECTORS
 from offers.scheduler import start_scheduler
+from offers.matching import find_matching_recipe_ids, is_watchlist_match
 
 app = FastAPI(title="Essensplaner")
 
@@ -693,6 +695,34 @@ def refresh_offer_source(source: str, db: Session = Depends(get_db)):
         "edeka_scraper": settings.edeka_store_url,
     }.get(source)
     return run_source(source, db, plz=settings.plz, store_url=store_url)
+
+
+@app.get("/api/offers", response_model=list[OfferOut])
+def list_offers(retailer: str | None = None, source: str | None = None, db: Session = Depends(get_db)):
+    query = db.query(Offer)
+    if retailer:
+        query = query.filter(Offer.retailer == retailer)
+    if source:
+        query = query.filter(Offer.source == source)
+
+    offers = query.all()
+    results = []
+    for offer in offers:
+        results.append(OfferOut(
+            id=offer.id,
+            retailer=offer.retailer,
+            source=offer.source,
+            product_name=offer.product_name,
+            description=offer.description,
+            price=offer.price,
+            discount_text=offer.discount_text,
+            valid_from=offer.valid_from.isoformat(),
+            valid_until=offer.valid_until.isoformat(),
+            matched_watchlist=is_watchlist_match(offer.product_name, db),
+            matched_recipe_ids=find_matching_recipe_ids(offer.product_name, db),
+        ))
+    results.sort(key=lambda o: (not o.matched_watchlist, o.valid_until))
+    return results
 
 
 app.mount("/recipe-images", StaticFiles(directory=str(IMAGES_DIR)), name="recipe-images")
