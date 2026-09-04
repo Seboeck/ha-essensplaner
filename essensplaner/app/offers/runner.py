@@ -2,6 +2,7 @@
 und schreibt Erfolg/Fehler in OfferSourceConfig. Ein Lauf betrifft immer
 nur die eigene `source` — andere Quellen bleiben unberührt."""
 import asyncio
+import logging
 from datetime import datetime
 
 from sqlalchemy.orm import Session
@@ -10,6 +11,8 @@ import ha_client
 from models import Offer, OfferSourceConfig
 from offers import kaufland_scraper, edeka_scraper, marktguru_connector
 from offers.matching import is_watchlist_match
+
+logger = logging.getLogger(__name__)
 
 CONNECTORS = {
     kaufland_scraper.SOURCE: kaufland_scraper,
@@ -68,6 +71,7 @@ def run_source(source: str, db: Session, plz: str, store_url: str | None = None)
         try:
             asyncio.run(ha_client.notify(message))
         except Exception:
+            logger.exception("Benachrichtigung für %s fehlgeschlagen", source)
             pass  # Benachrichtigung ist ein Nice-to-have, darf den Lauf nicht scheitern lassen
         for offer in matched:
             offer.notified_at = now

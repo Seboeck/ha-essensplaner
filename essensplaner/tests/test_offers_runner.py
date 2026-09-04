@@ -88,3 +88,19 @@ def test_run_source_does_not_renotify_same_offer_on_next_run(client):
 
     # Zweiter Lauf ersetzt die Offer-Zeile komplett (neue Zeile ohne notified_at) -> erneuter Aufruf ist korrekt
     assert mock_notify.call_count == 2
+
+
+def test_run_source_survives_notify_failure(client):
+    db = _db(client)
+    db.add(FridgeStaple(name="Gouda"))
+    db.commit()
+
+    fake_offers = [OfferData(retailer="kaufland", product_name="Gouda Scheiben 250g",
+                              valid_from=date(2026, 9, 7), valid_until=date(2026, 9, 13))]
+    with patch("offers.kaufland_scraper.fetch_offers", return_value=fake_offers), \
+         patch("ha_client.notify", new_callable=AsyncMock, side_effect=Exception("HA nicht erreichbar")):
+        config = run_source("kaufland_scraper", db, plz="12345")
+
+    # Verbindung zum HA-Notify-Service ist fehlgeschlagen, der Connector-Lauf selbst
+    # war aber erfolgreich -> darf den Lauf nicht scheitern lassen (nur die Benachrichtigung).
+    assert config.last_status == "ok"
