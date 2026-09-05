@@ -3,6 +3,15 @@ from pydantic import BaseModel
 
 
 class IngredientIn(BaseModel):
+    """Zutat für Anlegen/Bearbeiten eines Rezepts — artikel_id ist
+    bereits per Autocomplete in der UI aufgelöst (siehe Task 15)."""
+    artikel_id: int
+    amount: Optional[float] = None
+    unit: Optional[str] = None
+
+
+class IngredientOut(BaseModel):
+    artikel_id: int
     name: str
     amount: Optional[float] = None
     unit: Optional[str] = None
@@ -17,10 +26,16 @@ class RecipeIn(BaseModel):
     ingredients: list[IngredientIn] = []
 
 
-class RecipeOut(RecipeIn):
+class RecipeOut(BaseModel):
     id: int
+    title: str
+    base_servings: int
+    instructions: str
+    is_favorite: bool
+    tags: str
     image_path: Optional[str] = None
     source: str = "manual"
+    ingredients: list[IngredientOut] = []
 
     class Config:
         from_attributes = True

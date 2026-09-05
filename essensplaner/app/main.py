@@ -17,6 +17,7 @@ from models import (
 from schemas import (
     RecipeIn,
     RecipeOut,
+    IngredientOut,
     PlanEntryOut,
     SettingsIn,
     SettingsOut,
@@ -257,13 +258,37 @@ def merge_artikel(artikel_id: int, other_id: int, db: Session = Depends(get_db))
 
 # ---------- Rezepte ----------
 
+def _recipe_out(recipe: Recipe) -> RecipeOut:
+    return RecipeOut(
+        id=recipe.id,
+        title=recipe.title,
+        base_servings=recipe.base_servings,
+        instructions=recipe.instructions,
+        is_favorite=recipe.is_favorite,
+        tags=recipe.tags,
+        image_path=recipe.image_path,
+        source=recipe.source,
+        ingredients=[
+            IngredientOut(artikel_id=i.artikel_id, name=i.artikel.name, amount=i.amount, unit=i.unit)
+            for i in recipe.ingredients
+        ],
+    )
+
+
+def _require_artikel(artikel_id: int, db: Session) -> None:
+    if not db.query(Artikel).get(artikel_id):
+        raise HTTPException(400, f"Artikel {artikel_id} nicht gefunden")
+
+
 @app.get("/api/recipes", response_model=list[RecipeOut])
 def list_recipes(db: Session = Depends(get_db)):
-    return db.query(Recipe).all()
+    return [_recipe_out(r) for r in db.query(Recipe).all()]
 
 
 @app.post("/api/recipes", response_model=RecipeOut)
 def create_recipe(recipe: RecipeIn, db: Session = Depends(get_db)):
+    for i in recipe.ingredients:
+        _require_artikel(i.artikel_id, db)
     db_recipe = Recipe(
         title=recipe.title,
         base_servings=recipe.base_servings,
@@ -272,12 +297,12 @@ def create_recipe(recipe: RecipeIn, db: Session = Depends(get_db)):
         tags=recipe.tags,
     )
     db_recipe.ingredients = [
-        Ingredient(name=i.name, amount=i.amount, unit=i.unit) for i in recipe.ingredients
+        Ingredient(artikel_id=i.artikel_id, amount=i.amount, unit=i.unit) for i in recipe.ingredients
     ]
     db.add(db_recipe)
     db.commit()
     db.refresh(db_recipe)
-    return db_recipe
+    return _recipe_out(db_recipe)
 
 
 @app.put("/api/recipes/{recipe_id}", response_model=RecipeOut)
@@ -285,17 +310,19 @@ def update_recipe(recipe_id: int, recipe: RecipeIn, db: Session = Depends(get_db
     db_recipe = db.query(Recipe).get(recipe_id)
     if not db_recipe:
         raise HTTPException(404, "Rezept nicht gefunden")
+    for i in recipe.ingredients:
+        _require_artikel(i.artikel_id, db)
     db_recipe.title = recipe.title
     db_recipe.base_servings = recipe.base_servings
     db_recipe.instructions = recipe.instructions
     db_recipe.is_favorite = recipe.is_favorite
     db_recipe.tags = recipe.tags
     db_recipe.ingredients = [
-        Ingredient(name=i.name, amount=i.amount, unit=i.unit) for i in recipe.ingredients
+        Ingredient(artikel_id=i.artikel_id, amount=i.amount, unit=i.unit) for i in recipe.ingredients
     ]
     db.commit()
     db.refresh(db_recipe)
-    return db_recipe
+    return _recipe_out(db_recipe)
 
 
 @app.delete("/api/recipes/{recipe_id}")
@@ -328,7 +355,7 @@ async def upload_recipe_image(recipe_id: int, file: UploadFile = File(...), db: 
     db_recipe.image_path = f"/recipe-images/{recipe_id}{ext}"
     db.commit()
     db.refresh(db_recipe)
-    return db_recipe
+    return _recipe_out(db_recipe)
 
 
 # ---------- Export / Import ----------
