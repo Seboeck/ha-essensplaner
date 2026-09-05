@@ -14,3 +14,4 @@ class OfferData:
     description: Optional[str] = None
     price: Optional[float] = None
     discount_text: Optional[str] = None
+    image_url: Optional[str] = None

@@ -1,6 +1,20 @@
+from datetime import date, datetime, timedelta
 from unittest.mock import patch
-from datetime import date, timedelta
 from offers.base import OfferData
+
+
+def _db(client):
+    import database
+    return database.SessionLocal()
+
+
+def _mk_artikel(db, name):
+    from models import Artikel
+    a = Artikel(name=name, created_at=datetime.utcnow().isoformat())
+    db.add(a)
+    db.commit()
+    db.refresh(a)
+    return a
 
 
 def test_list_offers_empty_by_default(client):
@@ -11,7 +25,9 @@ def test_list_offers_empty_by_default(client):
 
 def test_list_offers_sorts_watchlist_matches_first(client):
     client.post("/api/settings", json={"calendar_entity": "calendar.essensplan", "todo_entity": "todo.einkaufen", "plz": "12345"})
-    client.post("/api/watchlist", json={"name": "Mehl"})
+    db = _db(client)
+    mehl = _mk_artikel(db, "Mehl")
+    client.post("/api/watchlist", json={"artikel_id": mehl.id})
 
     fake_offers = [
         OfferData(retailer="kaufland", product_name="Klopapier 8er", valid_from=date.today(), valid_until=date.today() + timedelta(days=5)),

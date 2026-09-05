@@ -8,7 +8,9 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 import ha_client
-from models import Offer, OfferSourceConfig
+from artikel_matching import resolve_artikel
+from artikel_images import download_artikel_image
+from models import Artikel, ArtikelPriceHistory, Offer, OfferSourceConfig, PendingArtikelMatch
 from offers import kaufland_scraper, edeka_scraper, marktguru_connector
 from offers.matching import is_watchlist_match
 
@@ -29,6 +31,65 @@ def get_or_create_source_config(source: str, db: Session) -> OfferSourceConfig:
         db.commit()
         db.refresh(config)
     return config
+
+
+def _record_artikel_match(offer_data, source: str, db: Session, now: str) -> None:
+    """Ordnet ein Angebot einem Artikel zu: hohe Konfidenz -> Preis-Historie
+    (+ Bild, falls noch keins gesetzt), mittlere Konfidenz -> Bestätigungs-
+    Warteschlange. Niedrige Konfidenz wird ignoriert (kein bekannter Artikel
+    passt)."""
+    match = resolve_artikel(offer_data.product_name, db)
+
+    if match.confidence == "high":
+        artikel = match.artikel
+        duplicate = (
+            db.query(ArtikelPriceHistory)
+            .filter(
+                ArtikelPriceHistory.artikel_id == artikel.id,
+                ArtikelPriceHistory.valid_from == offer_data.valid_from,
+                ArtikelPriceHistory.valid_until == offer_data.valid_until,
+                ArtikelPriceHistory.price == offer_data.price,
+            )
+            .first()
+        )
+        if not duplicate:
+            db.add(ArtikelPriceHistory(
+                artikel_id=artikel.id, price=offer_data.price, discount_text=offer_data.discount_text,
+                retailer=offer_data.retailer, source=source,
+                valid_from=offer_data.valid_from, valid_until=offer_data.valid_until, recorded_at=now,
+            ))
+        if not artikel.image_path and offer_data.image_url:
+            image_path = download_artikel_image(artikel.id, offer_data.image_url)
+            if image_path:
+                artikel.image_path = image_path
+
+    elif match.confidence == "medium":
+        product_norm = offer_data.product_name.strip().lower()
+        for artikel, score in match.candidates:
+            existing = (
+                db.query(PendingArtikelMatch)
+                .filter(
+                    PendingArtikelMatch.product_name.ilike(product_norm),
+                    PendingArtikelMatch.artikel_id == artikel.id,
+                    PendingArtikelMatch.status == "open",
+                )
+                .first()
+            )
+            if existing:
+                existing.score = score
+                existing.price = offer_data.price
+                existing.discount_text = offer_data.discount_text
+                existing.retailer = offer_data.retailer
+                existing.source = source
+                existing.valid_from = offer_data.valid_from
+                existing.valid_until = offer_data.valid_until
+            else:
+                db.add(PendingArtikelMatch(
+                    product_name=offer_data.product_name, artikel_id=artikel.id, score=score,
+                    price=offer_data.price, discount_text=offer_data.discount_text,
+                    retailer=offer_data.retailer, source=source,
+                    valid_from=offer_data.valid_from, valid_until=offer_data.valid_until, created_at=now,
+                ))
 
 
 def run_source(source: str, db: Session, plz: str, store_url: str | None = None) -> OfferSourceConfig:
@@ -72,6 +133,7 @@ def run_source(source: str, db: Session, plz: str, store_url: str | None = None)
             scraped_at=now,
             notified_at=carried_notified_at,
         ))
+        _record_artikel_match(offer_data, source, db, now)
 
     db.flush()  # ohne Flush sieht die folgende Query die eben hinzugefügten Zeilen nicht (autoflush ist in Tests aus)
     new_offers = db.query(Offer).filter(Offer.source == source, Offer.notified_at.is_(None)).all()
