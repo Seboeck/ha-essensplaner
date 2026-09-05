@@ -159,3 +159,34 @@ class OfferSourceConfigUpdateIn(BaseModel):
     enabled: Optional[bool] = None
     schedule_weekday: Optional[int] = None
     schedule_hour: Optional[int] = None
+
+
+class ArtikelIn(BaseModel):
+    name: str
+
+
+class ArtikelOut(BaseModel):
+    id: int
+    name: str
+    image_path: Optional[str] = None
+    last_price: Optional[float] = None
+    last_discount_text: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class ArtikelSuggestOut(BaseModel):
+    id: int
+    name: str
+    confidence: str  # "high" | "medium"
+
+
+class ArtikelPriceHistoryOut(BaseModel):
+    price: Optional[float] = None
+    discount_text: Optional[str] = None
+    retailer: str
+    source: str
+    valid_from: str
+    valid_until: str
+    recorded_at: str

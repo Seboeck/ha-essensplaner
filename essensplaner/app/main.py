@@ -1,5 +1,5 @@
 import base64
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 import anthropic
@@ -11,7 +11,8 @@ import database
 from database import init_db, get_db
 from models import (
     Recipe, Ingredient, PlanEntry, Settings, FridgeItem, FridgeStaple,
-    WatchlistItem, OfferSourceConfig, Offer,
+    WatchlistItem, OfferSourceConfig, Offer, Artikel, ArtikelPriceHistory,
+    PendingArtikelMatch,
 )
 from schemas import (
     RecipeIn,
@@ -32,12 +33,17 @@ from schemas import (
     OfferSourceConfigOut,
     OfferSourceConfigUpdateIn,
     OfferOut,
+    ArtikelIn,
+    ArtikelOut,
+    ArtikelSuggestOut,
+    ArtikelPriceHistoryOut,
 )
 import ha_client
 from planner import generate_week_plan, aggregate_shopping_list
 from offers.runner import run_source, get_or_create_source_config, CONNECTORS
 from offers.scheduler import start_scheduler
 from offers.matching import find_matching_recipe_ids, is_watchlist_match
+from artikel_matching import resolve_artikel
 
 app = FastAPI(title="Essensplaner")
 
@@ -132,6 +138,121 @@ async def save_settings(payload: SettingsIn, db: Session = Depends(get_db)):
         available_calendars=calendars,
         available_todo_lists=todo_lists,
     )
+
+
+# ---------- Artikel ----------
+
+def _artikel_out(artikel: Artikel, db: Session) -> ArtikelOut:
+    last = (
+        db.query(ArtikelPriceHistory)
+        .filter(ArtikelPriceHistory.artikel_id == artikel.id)
+        .order_by(ArtikelPriceHistory.recorded_at.desc())
+        .first()
+    )
+    return ArtikelOut(
+        id=artikel.id,
+        name=artikel.name,
+        image_path=artikel.image_path,
+        last_price=last.price if last else None,
+        last_discount_text=last.discount_text if last else None,
+    )
+
+
+@app.get("/api/artikel", response_model=list[ArtikelOut])
+def list_artikel(db: Session = Depends(get_db)):
+    artikel = db.query(Artikel).order_by(Artikel.name).all()
+    return [_artikel_out(a, db) for a in artikel]
+
+
+@app.get("/api/artikel/suggest", response_model=list[ArtikelSuggestOut])
+def suggest_artikel(q: str, db: Session = Depends(get_db)):
+    # Muss vor "/api/artikel/{artikel_id}" registriert sein, sonst versucht
+    # FastAPI "suggest" als int-Pfadparameter zu parsen (422) statt hierher
+    # zu routen.
+    if not q.strip():
+        return []
+    match = resolve_artikel(q, db)
+    if match.confidence == "high":
+        return [ArtikelSuggestOut(id=match.artikel.id, name=match.artikel.name, confidence="high")]
+    if match.confidence == "medium":
+        return [
+            ArtikelSuggestOut(id=a.id, name=a.name, confidence="medium")
+            for a, _ in match.candidates
+        ]
+    return []
+
+
+@app.get("/api/artikel/{artikel_id}", response_model=ArtikelOut)
+def get_artikel(artikel_id: int, db: Session = Depends(get_db)):
+    artikel = db.query(Artikel).get(artikel_id)
+    if not artikel:
+        raise HTTPException(404, "Artikel nicht gefunden")
+    return _artikel_out(artikel, db)
+
+
+@app.get("/api/artikel/{artikel_id}/history", response_model=list[ArtikelPriceHistoryOut])
+def get_artikel_history(artikel_id: int, db: Session = Depends(get_db)):
+    artikel = db.query(Artikel).get(artikel_id)
+    if not artikel:
+        raise HTTPException(404, "Artikel nicht gefunden")
+    entries = (
+        db.query(ArtikelPriceHistory)
+        .filter(ArtikelPriceHistory.artikel_id == artikel_id)
+        .order_by(ArtikelPriceHistory.recorded_at.desc())
+        .all()
+    )
+    return [
+        ArtikelPriceHistoryOut(
+            price=e.price, discount_text=e.discount_text, retailer=e.retailer, source=e.source,
+            valid_from=e.valid_from.isoformat(), valid_until=e.valid_until.isoformat(),
+            recorded_at=e.recorded_at,
+        ) for e in entries
+    ]
+
+
+@app.post("/api/artikel", response_model=ArtikelOut)
+def create_artikel(payload: ArtikelIn, db: Session = Depends(get_db)):
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(400, "Name darf nicht leer sein.")
+    artikel = Artikel(name=name, created_at=datetime.utcnow().isoformat())
+    db.add(artikel)
+    db.commit()
+    db.refresh(artikel)
+    return _artikel_out(artikel, db)
+
+
+@app.post("/api/artikel/{artikel_id}/merge/{other_id}", response_model=ArtikelOut)
+def merge_artikel(artikel_id: int, other_id: int, db: Session = Depends(get_db)):
+    """Führt den Artikel `other_id` in `artikel_id` zusammen: alle
+    verweisenden Zeilen werden umgehängt, `other_id` wird gelöscht. Bei
+    FridgeStaple/WatchlistItem (unique je Artikel) wird die Zeile des zu
+    löschenden Artikels verworfen, falls der Ziel-Artikel bereits eine
+    eigene hat, statt eine Unique-Constraint-Verletzung zu riskieren."""
+    if artikel_id == other_id:
+        raise HTTPException(400, "Kann einen Artikel nicht mit sich selbst zusammenführen.")
+    target = db.query(Artikel).get(artikel_id)
+    other = db.query(Artikel).get(other_id)
+    if not target or not other:
+        raise HTTPException(404, "Artikel nicht gefunden")
+
+    db.query(Ingredient).filter(Ingredient.artikel_id == other_id).update({"artikel_id": artikel_id})
+    db.query(FridgeItem).filter(FridgeItem.artikel_id == other_id).update({"artikel_id": artikel_id})
+    db.query(ArtikelPriceHistory).filter(ArtikelPriceHistory.artikel_id == other_id).update({"artikel_id": artikel_id})
+    db.query(PendingArtikelMatch).filter(PendingArtikelMatch.artikel_id == other_id).update({"artikel_id": artikel_id})
+
+    for model in (FridgeStaple, WatchlistItem):
+        other_row = db.query(model).filter(model.artikel_id == other_id).first()
+        if other_row:
+            if db.query(model).filter(model.artikel_id == artikel_id).first():
+                db.delete(other_row)
+            else:
+                other_row.artikel_id = artikel_id
+
+    db.delete(other)
+    db.commit()
+    db.refresh(target)
+    return _artikel_out(target, db)
 
 
 # ---------- Rezepte ----------
