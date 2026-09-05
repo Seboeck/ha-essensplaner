@@ -68,19 +68,21 @@ def generate_week_plan(db: Session, start_date: date) -> list[PlanEntry]:
 
 
 def aggregate_shopping_list(db: Session, entries: list[PlanEntry]) -> list[str]:
-    """Fasst gleiche Zutaten aus allen geplanten Rezepten zusammen (Name+Einheit als Schlüssel)."""
-    totals: dict[tuple[str, str], float] = {}
+    """Fasst gleiche Zutaten (per artikel_id) aus allen geplanten Rezepten zusammen."""
+    totals: dict[tuple[int, str], float] = {}
+    names: dict[int, str] = {}
     unitless: list[str] = []
 
     for entry in entries:
         recipe = entry.recipe
         for ing in recipe.ingredients:
+            names[ing.artikel_id] = ing.artikel.name
             if ing.amount is None or ing.unit is None:
-                unitless.append(ing.name)
+                unitless.append(ing.artikel.name)
                 continue
-            key = (ing.name.strip().lower(), ing.unit.strip().lower())
+            key = (ing.artikel_id, ing.unit.strip().lower())
             totals[key] = totals.get(key, 0) + ing.amount
 
-    items = [f"{amount:g} {unit} {name}" for (name, unit), amount in totals.items()]
+    items = [f"{amount:g} {unit} {names[artikel_id]}" for (artikel_id, unit), amount in totals.items()]
     items.extend(sorted(set(unitless)))
     return items
