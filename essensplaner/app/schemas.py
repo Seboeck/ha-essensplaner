@@ -169,17 +169,15 @@ class FridgeStapleIn(BaseModel):
 
 
 class WatchlistItemIn(BaseModel):
-    name: str
+    artikel_id: int
     unit: Optional[str] = None
 
 
 class WatchlistItemOut(BaseModel):
     id: int
+    artikel_id: int
     name: str
     unit: Optional[str] = None
-
-    class Config:
-        from_attributes = True
 
 
 class OfferOut(BaseModel):

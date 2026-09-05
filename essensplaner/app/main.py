@@ -812,23 +812,30 @@ def unmark_fridge_staple(artikel_id: int, db: Session = Depends(get_db)):
 
 @app.get("/api/watchlist", response_model=list[WatchlistItemOut])
 def list_watchlist(db: Session = Depends(get_db)):
-    return db.query(WatchlistItem).order_by(WatchlistItem.name).all()
+    items = [
+        WatchlistItemOut(id=i.id, artikel_id=i.artikel_id, name=i.artikel.name, unit=i.unit)
+        for i in db.query(WatchlistItem).all()
+    ]
+    items.sort(key=lambda i: i.name.lower())
+    return items
 
 
 @app.post("/api/watchlist", response_model=WatchlistItemOut)
 def add_watchlist_item(payload: WatchlistItemIn, db: Session = Depends(get_db)):
-    name = payload.name.strip()
-    existing = db.query(WatchlistItem).filter(WatchlistItem.name.ilike(name)).first()
+    _require_artikel(payload.artikel_id, db)
+    existing = db.query(WatchlistItem).filter(WatchlistItem.artikel_id == payload.artikel_id).first()
     if existing:
         existing.unit = payload.unit
         db.commit()
         db.refresh(existing)
-        return existing
-    item = WatchlistItem(name=name, unit=payload.unit)
+        return WatchlistItemOut(
+            id=existing.id, artikel_id=existing.artikel_id, name=existing.artikel.name, unit=existing.unit,
+        )
+    item = WatchlistItem(artikel_id=payload.artikel_id, unit=payload.unit)
     db.add(item)
     db.commit()
     db.refresh(item)
-    return item
+    return WatchlistItemOut(id=item.id, artikel_id=item.artikel_id, name=item.artikel.name, unit=item.unit)
 
 
 @app.delete("/api/watchlist/{item_id}")
