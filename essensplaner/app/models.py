@@ -24,11 +24,12 @@ class Ingredient(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     recipe_id = Column(Integer, ForeignKey("recipes.id"))
-    name = Column(String, nullable=False)
+    artikel_id = Column(Integer, ForeignKey("artikel.id"), nullable=False)
     amount = Column(Float, nullable=True)
     unit = Column(String, nullable=True)  # g, kg, ml, l, Stück, EL, TL, ...
 
     recipe = relationship("Recipe", back_populates="ingredients")
+    artikel = relationship("Artikel")
 
 
 class Settings(Base):
@@ -60,9 +61,11 @@ class FridgeItem(Base):
     __tablename__ = "fridge_items"
 
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, nullable=False)
+    artikel_id = Column(Integer, ForeignKey("artikel.id"), nullable=False)
     amount = Column(Float, nullable=True)
     unit = Column(String, nullable=True)
+
+    artikel = relationship("Artikel")
 
 
 class FridgeStaple(Base):
@@ -71,8 +74,10 @@ class FridgeStaple(Base):
     __tablename__ = "fridge_staples"
 
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, nullable=False, unique=True)
+    artikel_id = Column(Integer, ForeignKey("artikel.id"), nullable=False, unique=True)
     unit = Column(String, nullable=True)
+
+    artikel = relationship("Artikel")
 
 
 class Offer(Base):
@@ -98,8 +103,10 @@ class WatchlistItem(Base):
     __tablename__ = "watchlist_items"
 
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, nullable=False, unique=True)
+    artikel_id = Column(Integer, ForeignKey("artikel.id"), nullable=False, unique=True)
     unit = Column(String, nullable=True)
+
+    artikel = relationship("Artikel")
 
 
 class OfferSourceConfig(Base):
