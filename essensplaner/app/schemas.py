@@ -148,13 +148,14 @@ class ImportApplyOut(BaseModel):
 
 
 class FridgeItemIn(BaseModel):
-    name: str
+    artikel_id: int
     amount: Optional[float] = None
     unit: Optional[str] = None
 
 
 class FridgeItemOut(BaseModel):
     id: Optional[int] = None
+    artikel_id: int
     name: str
     amount: Optional[float] = None
     unit: Optional[str] = None
@@ -163,7 +164,7 @@ class FridgeItemOut(BaseModel):
 
 
 class FridgeStapleIn(BaseModel):
-    name: str
+    artikel_id: int
     unit: Optional[str] = None
 
 

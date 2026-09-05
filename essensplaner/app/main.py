@@ -709,35 +709,30 @@ async def push_shopping_list(start: str, db: Session = Depends(get_db)):
 
 # ---------- Kühlschrank ----------
 
-def _norm(name: str) -> str:
-    return name.strip().lower()
-
-
 @app.get("/api/fridge", response_model=list[FridgeItemOut])
 def list_fridge(db: Session = Depends(get_db)):
     """
     Kombinierte Sicht aus aktuellem Bestand (fridge_items) und Standardartikeln
     (fridge_staples). Ein Standardartikel ohne passenden Bestandseintrag wird
-    trotzdem angezeigt, aber als 'fehlt' markiert (in_stock=False) – so bleibt
-    sichtbar, dass er eigentlich immer vorhanden sein sollte.
+    trotzdem angezeigt, aber als 'fehlt' markiert (in_stock=False).
     """
     items = db.query(FridgeItem).all()
-    staples_by_norm = {_norm(s.name): s for s in db.query(FridgeStaple).all()}
+    staples_by_artikel = {s.artikel_id: s for s in db.query(FridgeStaple).all()}
 
     result = []
     covered = set()
     for item in items:
-        key = _norm(item.name)
-        covered.add(key)
+        covered.add(item.artikel_id)
         result.append(FridgeItemOut(
-            id=item.id, name=item.name, amount=item.amount, unit=item.unit,
-            is_staple=key in staples_by_norm, in_stock=True,
+            id=item.id, artikel_id=item.artikel_id, name=item.artikel.name,
+            amount=item.amount, unit=item.unit,
+            is_staple=item.artikel_id in staples_by_artikel, in_stock=True,
         ))
-    for key, staple in staples_by_norm.items():
-        if key not in covered:
+    for artikel_id, staple in staples_by_artikel.items():
+        if artikel_id not in covered:
             result.append(FridgeItemOut(
-                id=None, name=staple.name, amount=None, unit=staple.unit,
-                is_staple=True, in_stock=False,
+                id=None, artikel_id=artikel_id, name=staple.artikel.name, amount=None,
+                unit=staple.unit, is_staple=True, in_stock=False,
             ))
 
     result.sort(key=lambda i: i.name.lower())
@@ -746,23 +741,22 @@ def list_fridge(db: Session = Depends(get_db)):
 
 @app.post("/api/fridge/items", response_model=FridgeItemOut)
 def upsert_fridge_item(payload: FridgeItemIn, db: Session = Depends(get_db)):
-    """Legt einen Bestandsartikel an oder aktualisiert Menge/Einheit, falls der Name schon existiert."""
-    name = payload.name.strip()
-    if not name:
-        raise HTTPException(400, "Name darf nicht leer sein.")
-    item = db.query(FridgeItem).filter(FridgeItem.name.ilike(name)).first()
+    """Legt einen Bestandsartikel an oder aktualisiert Menge/Einheit, falls
+    der Artikel schon existiert."""
+    _require_artikel(payload.artikel_id, db)
+    item = db.query(FridgeItem).filter(FridgeItem.artikel_id == payload.artikel_id).first()
     if item:
         item.amount = payload.amount
         item.unit = payload.unit
     else:
-        item = FridgeItem(name=name, amount=payload.amount, unit=payload.unit)
+        item = FridgeItem(artikel_id=payload.artikel_id, amount=payload.amount, unit=payload.unit)
         db.add(item)
     db.commit()
     db.refresh(item)
-    is_staple = db.query(FridgeStaple).filter(FridgeStaple.name.ilike(name)).first() is not None
+    is_staple = db.query(FridgeStaple).filter(FridgeStaple.artikel_id == payload.artikel_id).first() is not None
     return FridgeItemOut(
-        id=item.id, name=item.name, amount=item.amount, unit=item.unit,
-        is_staple=is_staple, in_stock=True,
+        id=item.id, artikel_id=item.artikel_id, name=item.artikel.name, amount=item.amount,
+        unit=item.unit, is_staple=is_staple, in_stock=True,
     )
 
 
@@ -780,28 +774,33 @@ def remove_fridge_item(item_id: int, db: Session = Depends(get_db)):
 
 @app.post("/api/fridge/staples", response_model=FridgeItemOut)
 def mark_fridge_staple(payload: FridgeStapleIn, db: Session = Depends(get_db)):
-    """Markiert einen Artikelnamen als Standardartikel ('sollte immer vorhanden sein')."""
-    name = payload.name.strip()
-    if not name:
-        raise HTTPException(400, "Name darf nicht leer sein.")
-    staple = db.query(FridgeStaple).filter(FridgeStaple.name.ilike(name)).first()
+    """Markiert einen Artikel als Standardartikel ('sollte immer vorhanden sein')."""
+    _require_artikel(payload.artikel_id, db)
+    staple = db.query(FridgeStaple).filter(FridgeStaple.artikel_id == payload.artikel_id).first()
     if staple:
         staple.unit = payload.unit
     else:
-        staple = FridgeStaple(name=name, unit=payload.unit)
+        staple = FridgeStaple(artikel_id=payload.artikel_id, unit=payload.unit)
         db.add(staple)
     db.commit()
 
-    item = db.query(FridgeItem).filter(FridgeItem.name.ilike(name)).first()
+    artikel = db.query(Artikel).get(payload.artikel_id)
+    item = db.query(FridgeItem).filter(FridgeItem.artikel_id == payload.artikel_id).first()
     if item:
-        return FridgeItemOut(id=item.id, name=item.name, amount=item.amount, unit=item.unit, is_staple=True, in_stock=True)
-    return FridgeItemOut(id=None, name=name, amount=None, unit=payload.unit, is_staple=True, in_stock=False)
+        return FridgeItemOut(
+            id=item.id, artikel_id=item.artikel_id, name=artikel.name, amount=item.amount,
+            unit=item.unit, is_staple=True, in_stock=True,
+        )
+    return FridgeItemOut(
+        id=None, artikel_id=payload.artikel_id, name=artikel.name, amount=None,
+        unit=payload.unit, is_staple=True, in_stock=False,
+    )
 
 
-@app.delete("/api/fridge/staples/by-name/{name}")
-def unmark_fridge_staple(name: str, db: Session = Depends(get_db)):
+@app.delete("/api/fridge/staples/by-artikel/{artikel_id}")
+def unmark_fridge_staple(artikel_id: int, db: Session = Depends(get_db)):
     """Entfernt die Standardartikel-Markierung. Ein evtl. vorhandener Bestandseintrag bleibt bestehen."""
-    staple = db.query(FridgeStaple).filter(FridgeStaple.name.ilike(name)).first()
+    staple = db.query(FridgeStaple).filter(FridgeStaple.artikel_id == artikel_id).first()
     if not staple:
         raise HTTPException(404, "Standardartikel nicht gefunden")
     db.delete(staple)
