@@ -9,7 +9,10 @@ from sqlalchemy.orm import Session
 
 import database
 from database import init_db, get_db
-from models import Recipe, Ingredient, PlanEntry, Settings, FridgeItem, FridgeStaple
+from models import (
+    Recipe, Ingredient, PlanEntry, Settings, FridgeItem, FridgeStaple,
+    WatchlistItem, OfferSourceConfig, Offer,
+)
 from schemas import (
     RecipeIn,
     RecipeOut,
@@ -24,14 +27,23 @@ from schemas import (
     FridgeItemIn,
     FridgeItemOut,
     FridgeStapleIn,
+    WatchlistItemIn,
+    WatchlistItemOut,
+    OfferSourceConfigOut,
+    OfferSourceConfigUpdateIn,
+    OfferOut,
 )
 import ha_client
 from planner import generate_week_plan, aggregate_shopping_list
+from offers.runner import run_source, get_or_create_source_config, CONNECTORS
+from offers.scheduler import start_scheduler
+from offers.matching import find_matching_recipe_ids, is_watchlist_match
 
 app = FastAPI(title="Essensplaner")
 
 IMAGES_DIR = Path(database.DB_PATH).parent / "images"
 IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+STATIC_DIR = Path(__file__).resolve().parent / "static"
 IMAGE_EXTENSIONS = {
     "image/jpeg": ".jpg",
     "image/png": ".png",
@@ -44,6 +56,12 @@ IMAGE_EXTENSIONS = {
 @app.on_event("startup")
 def on_startup():
     init_db()
+    app.state.scheduler = start_scheduler()
+
+
+@app.on_event("shutdown")
+def on_shutdown():
+    app.state.scheduler.shutdown(wait=False)
 
 
 def get_settings(db: Session) -> Settings:
@@ -80,6 +98,9 @@ async def read_settings(db: Session = Depends(get_db)):
         calendar_entity=settings.calendar_entity,
         todo_entity=settings.todo_entity,
         anthropic_api_key_set=bool(settings.anthropic_api_key),
+        plz=settings.plz,
+        kaufland_store_url=settings.kaufland_store_url,
+        edeka_store_url=settings.edeka_store_url,
         available_calendars=calendars,
         available_todo_lists=todo_lists,
     )
@@ -92,6 +113,12 @@ async def save_settings(payload: SettingsIn, db: Session = Depends(get_db)):
     settings.todo_entity = payload.todo_entity
     if payload.anthropic_api_key is not None:
         settings.anthropic_api_key = payload.anthropic_api_key or None
+    if payload.plz is not None:
+        settings.plz = payload.plz or None
+    if payload.kaufland_store_url is not None:
+        settings.kaufland_store_url = payload.kaufland_store_url or None
+    if payload.edeka_store_url is not None:
+        settings.edeka_store_url = payload.edeka_store_url or None
     db.commit()
     calendars = await _list_entities_safe("calendar")
     todo_lists = await _list_entities_safe("todo")
@@ -99,6 +126,9 @@ async def save_settings(payload: SettingsIn, db: Session = Depends(get_db)):
         calendar_entity=settings.calendar_entity,
         todo_entity=settings.todo_entity,
         anthropic_api_key_set=bool(settings.anthropic_api_key),
+        plz=settings.plz,
+        kaufland_store_url=settings.kaufland_store_url,
+        edeka_store_url=settings.edeka_store_url,
         available_calendars=calendars,
         available_todo_lists=todo_lists,
     )
@@ -593,5 +623,107 @@ def unmark_fridge_staple(name: str, db: Session = Depends(get_db)):
     return {"status": "ok"}
 
 
+# ---------- Merkliste (regelmäßig benötigte Artikel, kein Kühlschrank-Bestand) ----------
+
+@app.get("/api/watchlist", response_model=list[WatchlistItemOut])
+def list_watchlist(db: Session = Depends(get_db)):
+    return db.query(WatchlistItem).order_by(WatchlistItem.name).all()
+
+
+@app.post("/api/watchlist", response_model=WatchlistItemOut)
+def add_watchlist_item(payload: WatchlistItemIn, db: Session = Depends(get_db)):
+    name = payload.name.strip()
+    existing = db.query(WatchlistItem).filter(WatchlistItem.name.ilike(name)).first()
+    if existing:
+        existing.unit = payload.unit
+        db.commit()
+        db.refresh(existing)
+        return existing
+    item = WatchlistItem(name=name, unit=payload.unit)
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    return item
+
+
+@app.delete("/api/watchlist/{item_id}")
+def remove_watchlist_item(item_id: int, db: Session = Depends(get_db)):
+    item = db.query(WatchlistItem).get(item_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Artikel nicht gefunden")
+    db.delete(item)
+    db.commit()
+    return {"ok": True}
+
+
+# ---------- Angebots-Quellen ----------
+
+@app.get("/api/offers/sources", response_model=list[OfferSourceConfigOut])
+def list_offer_sources(db: Session = Depends(get_db)):
+    for source in CONNECTORS:
+        get_or_create_source_config(source, db)
+    return db.query(OfferSourceConfig).order_by(OfferSourceConfig.source).all()
+
+
+@app.put("/api/offers/sources/{source}", response_model=OfferSourceConfigOut)
+def update_offer_source(source: str, payload: OfferSourceConfigUpdateIn, db: Session = Depends(get_db)):
+    if source not in CONNECTORS:
+        raise HTTPException(status_code=404, detail="Unbekannte Angebots-Quelle")
+    config = get_or_create_source_config(source, db)
+    if payload.enabled is not None:
+        config.enabled = payload.enabled
+    if payload.schedule_weekday is not None:
+        config.schedule_weekday = payload.schedule_weekday
+    if payload.schedule_hour is not None:
+        config.schedule_hour = payload.schedule_hour
+    db.commit()
+    db.refresh(config)
+    from offers.scheduler import schedule_source
+    schedule_source(app.state.scheduler, config)
+    return config
+
+
+@app.post("/api/offers/refresh/{source}", response_model=OfferSourceConfigOut)
+def refresh_offer_source(source: str, db: Session = Depends(get_db)):
+    if source not in CONNECTORS:
+        raise HTTPException(status_code=404, detail="Unbekannte Angebots-Quelle")
+    settings = get_settings(db)
+    if not settings.plz:
+        raise HTTPException(status_code=400, detail="Bitte zuerst eine PLZ in den Einstellungen hinterlegen")
+    store_url = {
+        "kaufland_scraper": settings.kaufland_store_url,
+        "edeka_scraper": settings.edeka_store_url,
+    }.get(source)
+    return run_source(source, db, plz=settings.plz, store_url=store_url)
+
+
+@app.get("/api/offers", response_model=list[OfferOut])
+def list_offers(retailer: str | None = None, source: str | None = None, db: Session = Depends(get_db)):
+    query = db.query(Offer).filter(Offer.valid_until >= date.today())
+    if retailer:
+        query = query.filter(Offer.retailer == retailer)
+    if source:
+        query = query.filter(Offer.source == source)
+
+    offers = query.all()
+    results = []
+    for offer in offers:
+        results.append(OfferOut(
+            id=offer.id,
+            retailer=offer.retailer,
+            source=offer.source,
+            product_name=offer.product_name,
+            description=offer.description,
+            price=offer.price,
+            discount_text=offer.discount_text,
+            valid_from=offer.valid_from.isoformat(),
+            valid_until=offer.valid_until.isoformat(),
+            matched_watchlist=is_watchlist_match(offer.product_name, db),
+            matched_recipe_ids=find_matching_recipe_ids(offer.product_name, db),
+        ))
+    results.sort(key=lambda o: (not o.matched_watchlist, o.valid_until))
+    return results
+
+
 app.mount("/recipe-images", StaticFiles(directory=str(IMAGES_DIR)), name="recipe-images")
-app.mount("/", StaticFiles(directory="static", html=True), name="static")
+app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")

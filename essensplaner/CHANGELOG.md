@@ -3,6 +3,22 @@
 Alle nennenswerten Änderungen an diesem Add-on werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.8.0] - 2026-09-05
+
+### Hinzugefügt
+
+- Neuer Tab "Angebote": zeigt aktuelle Kaufland- und Edeka-Angebote
+  (per PLZ), mit Hervorhebung von Standard- und Merklisten-Artikeln.
+- Zwei parallele Datenquellen (eigener Scraper je Händler + Marktguru-API)
+  zum Vergleich, einzeln konfigurierbar/deaktivierbar mit eigenem
+  Zeitplan.
+- Fuzzy-Matching zwischen Angeboten, Rezept-Zutaten und
+  Standard-/Merklisten-Artikeln.
+- Rezepte mit aktuell rabattierten Zutaten bekommen einen Gewichtsbonus
+  in der automatischen Wochenplanung.
+- Home-Assistant-Benachrichtigung bei neuen Angeboten zu
+  Merklisten-Artikeln.
+
 ## [0.7.0] - 2026-08-30
 
 ### Hinzugefügt

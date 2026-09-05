@@ -42,12 +42,18 @@ class SettingsIn(BaseModel):
     todo_entity: str
     # None = unverändert lassen, "" = Key löschen, sonst = neuen Key setzen
     anthropic_api_key: Optional[str] = None
+    plz: Optional[str] = None
+    kaufland_store_url: Optional[str] = None
+    edeka_store_url: Optional[str] = None
 
 
 class SettingsOut(BaseModel):
     calendar_entity: str
     todo_entity: str
     anthropic_api_key_set: bool = False
+    plz: Optional[str] = None
+    kaufland_store_url: Optional[str] = None
+    edeka_store_url: Optional[str] = None
     available_calendars: list[EntityOption] = []
     available_todo_lists: list[EntityOption] = []
 
@@ -104,3 +110,52 @@ class FridgeItemOut(BaseModel):
 class FridgeStapleIn(BaseModel):
     name: str
     unit: Optional[str] = None
+
+
+class WatchlistItemIn(BaseModel):
+    name: str
+    unit: Optional[str] = None
+
+
+class WatchlistItemOut(BaseModel):
+    id: int
+    name: str
+    unit: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class OfferOut(BaseModel):
+    id: int
+    retailer: str
+    source: str
+    product_name: str
+    description: Optional[str] = None
+    price: Optional[float] = None
+    discount_text: Optional[str] = None
+    valid_from: str
+    valid_until: str
+    matched_watchlist: bool = False
+    matched_recipe_ids: list[int] = []
+
+    class Config:
+        from_attributes = True
+
+
+class OfferSourceConfigOut(BaseModel):
+    source: str
+    enabled: bool
+    schedule_weekday: Optional[int] = None
+    schedule_hour: Optional[int] = None
+    last_run_at: Optional[str] = None
+    last_status: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class OfferSourceConfigUpdateIn(BaseModel):
+    enabled: Optional[bool] = None
+    schedule_weekday: Optional[int] = None
+    schedule_hour: Optional[int] = None

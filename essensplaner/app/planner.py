@@ -8,10 +8,21 @@ from datetime import date, timedelta
 
 from sqlalchemy.orm import Session
 
-from models import Recipe, PlanEntry
+from models import Recipe, PlanEntry, Offer
+from offers.matching import find_matching_recipe_ids
 
 FAVORITE_WEIGHT = 3
 NORMAL_WEIGHT = 1
+OFFER_WEIGHT_BONUS = 2
+
+
+def _recipe_ids_with_active_offer(db: Session) -> set[int]:
+    today = date.today()
+    active_offers = db.query(Offer).filter(Offer.valid_until >= today).all()
+    matched: set[int] = set()
+    for offer in active_offers:
+        matched.update(find_matching_recipe_ids(offer.product_name, db))
+    return matched
 
 
 def generate_week_plan(db: Session, start_date: date) -> list[PlanEntry]:
@@ -19,7 +30,12 @@ def generate_week_plan(db: Session, start_date: date) -> list[PlanEntry]:
     if not recipes:
         raise ValueError("Keine Rezepte vorhanden – bitte zuerst Rezepte anlegen.")
 
-    weights = [FAVORITE_WEIGHT if r.is_favorite else NORMAL_WEIGHT for r in recipes]
+    offer_recipe_ids = _recipe_ids_with_active_offer(db)
+    weights = [
+        (FAVORITE_WEIGHT if r.is_favorite else NORMAL_WEIGHT)
+        + (OFFER_WEIGHT_BONUS if r.id in offer_recipe_ids else 0)
+        for r in recipes
+    ]
     pool = list(zip(recipes, weights))
 
     chosen: list[Recipe] = []

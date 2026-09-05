@@ -69,3 +69,16 @@ async def set_day_options(input_select_entity: str, options: list[str]):
     """Aktualisiert die Auswahlmöglichkeiten eines input_select-Helpers (z.B. für schnelles Tauschen im Dashboard)."""
     payload = {"entity_id": input_select_entity, "options": options}
     return await _post("/api/services/input_select/set_options", payload)
+
+
+async def notify(message: str, title: str = "Essensplaner: Angebote", source: str | None = None):
+    """Sammel-Benachrichtigung über persistent_notification (kein Empfänger-
+    Setup nötig, funktioniert ohne konfigurierte mobile_app-Integration).
+
+    `source` macht die notification_id je Angebots-Quelle eindeutig: ohne das
+    würde `persistent_notification.create` bei gleicher id die Benachrichtigung
+    einer anderen Quelle überschreiben (z.B. wenn mehrere Connector-Läufe am
+    selben Termin ausgeführt werden)."""
+    notification_id = f"essensplaner_offers_{source}" if source else "essensplaner_offers"
+    payload = {"title": title, "message": message, "notification_id": notification_id}
+    return await _post("/api/services/persistent_notification/create", payload)

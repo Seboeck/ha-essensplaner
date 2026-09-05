@@ -2,7 +2,7 @@ import os
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
-from models import Base
+from models import Base, Offer, WatchlistItem, OfferSourceConfig
 
 # /share übersteht Add-on-Deinstallation/-Neuinstallation (anders als /data,
 # das der Supervisor beim Deinstallieren absichtlich löscht).
@@ -19,6 +19,14 @@ def _migrate_add_missing_columns():
         if "anthropic_api_key" not in existing:
             conn.execute(text("ALTER TABLE settings ADD COLUMN anthropic_api_key VARCHAR"))
             conn.commit()
+        for column, coltype in [
+            ("plz", "VARCHAR"),
+            ("kaufland_store_url", "VARCHAR"),
+            ("edeka_store_url", "VARCHAR"),
+        ]:
+            if column not in existing:
+                conn.execute(text(f"ALTER TABLE settings ADD COLUMN {column} {coltype}"))
+                conn.commit()
 
 
 def init_db():
