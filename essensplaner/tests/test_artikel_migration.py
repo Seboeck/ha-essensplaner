@@ -69,6 +69,74 @@ def test_migration_deduplicates_exact_names_across_tables(tmp_path, monkeypatch)
         db.close()
 
 
+def test_migration_resumes_after_interruption_between_create_all_and_populate(tmp_path, monkeypatch):
+    """Simuliert einen Container-Neustart genau in der Luecke zwischen
+    create_all() (neue, leere Tabellen bereits angelegt) und
+    _populate_artikel_from_legacy_tables() (Alt-Daten noch nicht
+    uebernommen). Die *_old-Tabellen mit den echten Nutzerdaten liegen in
+    diesem Zustand noch unangetastet auf der Platte. Ein erneuter
+    init_db()-Aufruf muss das erkennen und die Migration zu Ende fuehren,
+    statt die Alt-Daten fuer immer zu ignorieren."""
+    import database
+    from models import Base
+
+    db_file = tmp_path / "legacy.db"
+    _create_legacy_db(db_file)
+
+    test_engine = create_engine(f"sqlite:///{db_file}", connect_args={"check_same_thread": False})
+    TestSessionLocal = sessionmaker(bind=test_engine, autoflush=False, autocommit=False)
+    monkeypatch.setattr(database, "engine", test_engine)
+    monkeypatch.setattr(database, "SessionLocal", TestSessionLocal)
+
+    # Schritt 1+2 einer Migration von Hand nachstellen, Schritt 3
+    # (populate) absichtlich auslassen -> exakt der "interrupted" Zustand
+    # aus dem Review-Finding.
+    needs_migration = database._rename_legacy_artikel_tables_if_needed()
+    assert needs_migration is True
+    Base.metadata.create_all(bind=test_engine)
+
+    # Zwischenzustand verifizieren: neue Tabellen sind leer, Alt-Tabellen
+    # mit den echten Daten liegen noch unangetastet vor.
+    with test_engine.connect() as conn:
+        from sqlalchemy import text as sa_text
+        assert conn.execute(sa_text("SELECT COUNT(*) FROM ingredients")).scalar() == 0
+        assert conn.execute(sa_text("SELECT COUNT(*) FROM ingredients_old")).scalar() == 2
+
+    # Prozess "startet neu": init_db() von diesem unterbrochenen Zustand aus.
+    database.init_db()
+
+    from models import Artikel, Ingredient, FridgeStaple, WatchlistItem, FridgeItem
+
+    db = TestSessionLocal()
+    try:
+        artikel_names = sorted(a.name for a in db.query(Artikel).all())
+        assert artikel_names == ["Gouda", "Gouda gerieben", "Mehl"]
+
+        gouda = db.query(Artikel).filter(Artikel.name == "Gouda").first()
+        ingredients = db.query(Ingredient).filter(Ingredient.artikel_id == gouda.id).all()
+        assert len(ingredients) == 2
+
+        staple = db.query(FridgeStaple).first()
+        assert staple.artikel_id == gouda.id
+
+        watchlist = db.query(WatchlistItem).first()
+        mehl = db.query(Artikel).filter(Artikel.name == "Mehl").first()
+        assert watchlist.artikel_id == mehl.id
+
+        fridge_item = db.query(FridgeItem).first()
+        gouda_gerieben = db.query(Artikel).filter(Artikel.name == "Gouda gerieben").first()
+        assert fridge_item.artikel_id == gouda_gerieben.id
+    finally:
+        db.close()
+
+    # _old-Tabellen muessen nach abgeschlossener Migration weg sein.
+    with test_engine.connect() as conn:
+        from sqlalchemy import text as sa_text
+        assert conn.execute(
+            sa_text("SELECT name FROM sqlite_master WHERE type='table' AND name='ingredients_old'")
+        ).first() is None
+
+
 def test_migration_is_idempotent_noop_on_fresh_or_already_migrated_db(client):
     """Der `client`-Fixture-DB (bereits im neuen Schema erstellt) darf ein
     zweiter init_db()-Aufruf nichts kaputt machen."""

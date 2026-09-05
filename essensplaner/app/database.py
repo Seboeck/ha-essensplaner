@@ -31,8 +31,20 @@ def _rename_legacy_artikel_tables_if_needed() -> bool:
     nicht mehr). Falls ja: alle vier betroffenen Tabellen umbenennen,
     damit create_all() sie gleich darauf im neuen Schema (mit artikel_id)
     neu anlegt. Gibt True zurück, wenn eine Migration nötig ist (dann muss
-    später _populate_artikel_from_legacy_tables() aufgerufen werden)."""
+    später _populate_artikel_from_legacy_tables() aufgerufen werden).
+
+    Erkennt auch eine unterbrochene Migration aus einem vorherigen Lauf:
+    Existiert `ingredients_old` bereits, wurde die Umbenennung schon
+    durchgeführt (und möglicherweise auch schon create_all()), aber
+    _populate_artikel_from_legacy_tables() ist nicht bis zum Ende
+    gelaufen (z.B. weil der Container mittendrin neugestartet wurde). In
+    dem Fall darf NICHT nochmal umbenannt werden (die _old-Tabellen
+    existieren ja schon) — es muss nur signalisiert werden, dass der
+    Populate-Schritt noch aussteht, damit die Alt-Daten nicht verloren
+    gehen."""
     with engine.begin() as conn:
+        if _table_exists(conn, "ingredients_old"):
+            return True
         if not _table_exists(conn, "ingredients") or not _table_has_column(conn, "ingredients", "name"):
             return False
         for table in _LEGACY_ARTIKEL_TABLES:
@@ -51,6 +63,13 @@ def _populate_artikel_from_legacy_tables():
         now = datetime.utcnow().isoformat()
         artikel_by_norm: dict[str, int] = {}
 
+        # Bereits vorhandene Artikel (z.B. aus einem unterbrochenen
+        # vorherigen Migrationslauf) zuerst einlesen, damit
+        # get_or_create_artikel() sie wiederverwendet statt Duplikate
+        # anzulegen.
+        for row in conn.execute(text("SELECT id, name FROM artikel")):
+            artikel_by_norm[row.name.strip().lower()] = row.id
+
         def get_or_create_artikel(name: str) -> int:
             norm = name.strip().lower()
             if norm in artikel_by_norm:
@@ -66,7 +85,7 @@ def _populate_artikel_from_legacy_tables():
         for row in conn.execute(text("SELECT id, recipe_id, name, amount, unit FROM ingredients_old")):
             artikel_id = get_or_create_artikel(row.name)
             conn.execute(
-                text("INSERT INTO ingredients (id, recipe_id, artikel_id, amount, unit) "
+                text("INSERT OR IGNORE INTO ingredients (id, recipe_id, artikel_id, amount, unit) "
                      "VALUES (:id, :recipe_id, :artikel_id, :amount, :unit)"),
                 {"id": row.id, "recipe_id": row.recipe_id, "artikel_id": artikel_id, "amount": row.amount, "unit": row.unit},
             )
@@ -74,21 +93,21 @@ def _populate_artikel_from_legacy_tables():
         for row in conn.execute(text("SELECT id, name, unit FROM fridge_staples_old")):
             artikel_id = get_or_create_artikel(row.name)
             conn.execute(
-                text("INSERT INTO fridge_staples (id, artikel_id, unit) VALUES (:id, :artikel_id, :unit)"),
+                text("INSERT OR IGNORE INTO fridge_staples (id, artikel_id, unit) VALUES (:id, :artikel_id, :unit)"),
                 {"id": row.id, "artikel_id": artikel_id, "unit": row.unit},
             )
 
         for row in conn.execute(text("SELECT id, name, unit FROM watchlist_items_old")):
             artikel_id = get_or_create_artikel(row.name)
             conn.execute(
-                text("INSERT INTO watchlist_items (id, artikel_id, unit) VALUES (:id, :artikel_id, :unit)"),
+                text("INSERT OR IGNORE INTO watchlist_items (id, artikel_id, unit) VALUES (:id, :artikel_id, :unit)"),
                 {"id": row.id, "artikel_id": artikel_id, "unit": row.unit},
             )
 
         for row in conn.execute(text("SELECT id, name, amount, unit FROM fridge_items_old")):
             artikel_id = get_or_create_artikel(row.name)
             conn.execute(
-                text("INSERT INTO fridge_items (id, artikel_id, amount, unit) VALUES (:id, :artikel_id, :amount, :unit)"),
+                text("INSERT OR IGNORE INTO fridge_items (id, artikel_id, amount, unit) VALUES (:id, :artikel_id, :amount, :unit)"),
                 {"id": row.id, "artikel_id": artikel_id, "amount": row.amount, "unit": row.unit},
             )
 
