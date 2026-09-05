@@ -73,9 +73,34 @@ class SettingsOut(BaseModel):
     available_todo_lists: list[EntityOption] = []
 
 
+class ArtikelSuggestOut(BaseModel):
+    id: int
+    name: str
+    confidence: str  # "high" | "medium"
+
+
+class ImportIngredientIn(BaseModel):
+    """Freitext-Zutat, wie sie aus einer JSON-Import-Datei oder dem
+    Foto-Import kommt — noch nicht mit einem Artikel verknüpft."""
+    name: str
+    amount: Optional[float] = None
+    unit: Optional[str] = None
+
+
+class ImportRecipeIn(BaseModel):
+    """Rezept mit Freitext-Zutaten (Export-/Import-Dateiformat und
+    Foto-Import-Ergebnis)."""
+    title: str
+    base_servings: int = 4
+    instructions: str = ""
+    is_favorite: bool = False
+    tags: str = ""
+    ingredients: list[ImportIngredientIn] = []
+
+
 class RecipeExportFile(BaseModel):
     """Export-/Import-Dateiformat: eine oder mehrere Rezepte, ohne DB-IDs."""
-    recipes: list[RecipeIn]
+    recipes: list[ImportRecipeIn]
 
 
 class ImportConflict(BaseModel):
@@ -85,10 +110,18 @@ class ImportConflict(BaseModel):
     existing_title: str
 
 
+class IngredientAmbiguity(BaseModel):
+    recipe_index: int
+    ingredient_index: int
+    ingredient_name: str
+    candidates: list[ArtikelSuggestOut]
+
+
 class ImportPreviewOut(BaseModel):
     total: int
     new_count: int
     conflicts: list[ImportConflict]
+    ingredient_ambiguities: list[IngredientAmbiguity] = []
 
 
 class ImportResolution(BaseModel):
@@ -96,9 +129,16 @@ class ImportResolution(BaseModel):
     action: str  # "alt" (bestehendes Rezept behalten, Import überspringen) | "neu" (Import übernimmt)
 
 
+class IngredientResolution(BaseModel):
+    recipe_index: int
+    ingredient_index: int
+    artikel_id: int
+
+
 class ImportApplyIn(BaseModel):
-    recipes: list[RecipeIn]
+    recipes: list[ImportRecipeIn]
     resolutions: list[ImportResolution] = []
+    ingredient_resolutions: list[IngredientResolution] = []
 
 
 class ImportApplyOut(BaseModel):
@@ -189,12 +229,6 @@ class ArtikelOut(BaseModel):
 
     class Config:
         from_attributes = True
-
-
-class ArtikelSuggestOut(BaseModel):
-    id: int
-    name: str
-    confidence: str  # "high" | "medium"
 
 
 class ArtikelPriceHistoryOut(BaseModel):

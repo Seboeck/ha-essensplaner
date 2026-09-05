@@ -22,10 +22,14 @@ from schemas import (
     SettingsIn,
     SettingsOut,
     RecipeExportFile,
+    ImportRecipeIn,
+    ImportIngredientIn,
     ImportPreviewOut,
     ImportConflict,
+    IngredientAmbiguity,
     ImportApplyIn,
     ImportApplyOut,
+    IngredientResolution,
     FridgeItemIn,
     FridgeItemOut,
     FridgeStapleIn,
@@ -372,7 +376,7 @@ def _recipe_to_export(recipe: Recipe) -> dict:
         "is_favorite": recipe.is_favorite,
         "tags": recipe.tags,
         "ingredients": [
-            {"name": i.name, "amount": i.amount, "unit": i.unit} for i in recipe.ingredients
+            {"name": i.artikel.name, "amount": i.amount, "unit": i.unit} for i in recipe.ingredients
         ],
     }
 
@@ -393,15 +397,30 @@ def export_one_recipe(recipe_id: int, db: Session = Depends(get_db)):
     return {"recipes": [_recipe_to_export(recipe)]}
 
 
+def _auto_resolve_artikel_id(name: str, db: Session) -> int:
+    """Automatische Auflösung für Import-Pfade: hohe Konfidenz -> bestehender
+    Artikel, sonst neuer Artikel (kein stilles Raten zwischen mehreren
+    mittel-konfidenten Kandidaten — die werden im Preview gemeldet)."""
+    match = resolve_artikel(name, db)
+    if match.confidence == "high":
+        return match.artikel.id
+    artikel = Artikel(name=name.strip(), created_at=datetime.utcnow().isoformat())
+    db.add(artikel)
+    db.flush()
+    return artikel.id
+
+
 @app.post("/api/recipes/import/preview", response_model=ImportPreviewOut)
 def preview_import(payload: RecipeExportFile, db: Session = Depends(get_db)):
     """
     Prüft die zu importierenden Rezepte auf Titel-Duplikate mit bestehenden
-    Rezepten, ohne die DB zu verändern. Der Client löst die Konflikte auf
-    (alt behalten oder neu übernehmen) und ruft danach /import/apply auf.
+    Rezepten UND auf Zutaten, die nur mit mittlerer Konfidenz zu einem
+    bestehenden Artikel passen (Ambiguität), ohne die DB zu verändern.
     """
     existing_by_title = {_normalize_title(r.title): r for r in db.query(Recipe).all()}
     conflicts: list[ImportConflict] = []
+    ingredient_ambiguities: list[IngredientAmbiguity] = []
+
     for idx, recipe in enumerate(payload.recipes):
         match = existing_by_title.get(_normalize_title(recipe.title))
         if match:
@@ -413,10 +432,24 @@ def preview_import(payload: RecipeExportFile, db: Session = Depends(get_db)):
                     existing_title=match.title,
                 )
             )
+        for ing_idx, ing in enumerate(recipe.ingredients):
+            result = resolve_artikel(ing.name, db)
+            if result.confidence == "medium":
+                ingredient_ambiguities.append(IngredientAmbiguity(
+                    recipe_index=idx,
+                    ingredient_index=ing_idx,
+                    ingredient_name=ing.name,
+                    candidates=[
+                        ArtikelSuggestOut(id=a.id, name=a.name, confidence="medium")
+                        for a, _ in result.candidates
+                    ],
+                ))
+
     return ImportPreviewOut(
         total=len(payload.recipes),
         new_count=len(payload.recipes) - len(conflicts),
         conflicts=conflicts,
+        ingredient_ambiguities=ingredient_ambiguities,
     )
 
 
@@ -424,16 +457,26 @@ def preview_import(payload: RecipeExportFile, db: Session = Depends(get_db)):
 def apply_import(payload: ImportApplyIn, db: Session = Depends(get_db)):
     """
     Führt den Import durch: neue Rezepte (kein Titel-Duplikat) werden immer
-    angelegt. Für Duplikate entscheidet 'resolutions' pro Index:
-    action="neu" überschreibt das bestehende Rezept mit den Importdaten,
-    action="alt" (oder keine Angabe) behält das bestehende Rezept unverändert.
+    angelegt. Für Duplikate entscheidet 'resolutions' pro Index. Zutaten
+    werden per artikel_id aufgelöst: explizite 'ingredient_resolutions'
+    haben Vorrang, sonst automatische Auflösung (siehe _auto_resolve_artikel_id).
     """
     existing_by_title = {_normalize_title(r.title): r for r in db.query(Recipe).all()}
     resolution_by_index = {res.import_index: res.action for res in payload.resolutions}
+    ingredient_resolution_by_key = {
+        (r.recipe_index, r.ingredient_index): r.artikel_id for r in payload.ingredient_resolutions
+    }
 
     imported = overwritten = skipped = 0
 
     for idx, recipe in enumerate(payload.recipes):
+        ingredient_models = []
+        for ing_idx, ing in enumerate(recipe.ingredients):
+            artikel_id = ingredient_resolution_by_key.get((idx, ing_idx))
+            if artikel_id is None:
+                artikel_id = _auto_resolve_artikel_id(ing.name, db)
+            ingredient_models.append(Ingredient(artikel_id=artikel_id, amount=ing.amount, unit=ing.unit))
+
         match = existing_by_title.get(_normalize_title(recipe.title))
         if match:
             action = resolution_by_index.get(idx, "alt")
@@ -443,10 +486,7 @@ def apply_import(payload: ImportApplyIn, db: Session = Depends(get_db)):
                 match.instructions = recipe.instructions
                 match.is_favorite = recipe.is_favorite
                 match.tags = recipe.tags
-                match.ingredients = [
-                    Ingredient(name=i.name, amount=i.amount, unit=i.unit)
-                    for i in recipe.ingredients
-                ]
+                match.ingredients = ingredient_models
                 overwritten += 1
             else:
                 skipped += 1
@@ -458,9 +498,7 @@ def apply_import(payload: ImportApplyIn, db: Session = Depends(get_db)):
                 is_favorite=recipe.is_favorite,
                 tags=recipe.tags,
             )
-            db_recipe.ingredients = [
-                Ingredient(name=i.name, amount=i.amount, unit=i.unit) for i in recipe.ingredients
-            ]
+            db_recipe.ingredients = ingredient_models
             db.add(db_recipe)
             imported += 1
 
@@ -531,7 +569,7 @@ IMPORT_MEDIA_TYPES = {
 }
 
 
-@app.post("/api/recipes/import-photo", response_model=RecipeIn)
+@app.post("/api/recipes/import-photo", response_model=ImportRecipeIn)
 async def import_recipe_photo(files: list[UploadFile] = File(...), db: Session = Depends(get_db)):
     """
     Nimmt ein oder mehrere Fotos/PDFs einer Rezeptkarte oder eines handschriftlichen Rezepts
@@ -590,7 +628,7 @@ async def import_recipe_photo(files: list[UploadFile] = File(...), db: Session =
         raise HTTPException(502, "Konnte keine Rezeptdaten aus dem Foto erkennen.")
 
     try:
-        return RecipeIn(**tool_use.input)
+        return ImportRecipeIn(**tool_use.input)
     except Exception:
         raise HTTPException(502, "Erkannte Daten hatten ein unerwartetes Format.")
 
