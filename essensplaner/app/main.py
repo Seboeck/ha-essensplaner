@@ -699,7 +699,7 @@ def refresh_offer_source(source: str, db: Session = Depends(get_db)):
 
 @app.get("/api/offers", response_model=list[OfferOut])
 def list_offers(retailer: str | None = None, source: str | None = None, db: Session = Depends(get_db)):
-    query = db.query(Offer)
+    query = db.query(Offer).filter(Offer.valid_until >= date.today())
     if retailer:
         query = query.filter(Offer.retailer == retailer)
     if source:

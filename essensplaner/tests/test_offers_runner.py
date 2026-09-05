@@ -86,8 +86,10 @@ def test_run_source_does_not_renotify_same_offer_on_next_run(client):
         run_source("kaufland_scraper", db, plz="12345")
         run_source("kaufland_scraper", db, plz="12345")
 
-    # Zweiter Lauf ersetzt die Offer-Zeile komplett (neue Zeile ohne notified_at) -> erneuter Aufruf ist korrekt
-    assert mock_notify.call_count == 2
+    # Obwohl der zweite Lauf die Offer-Zeile komplett ersetzt (delete-then-replace),
+    # wird notified_at anhand der Identität (product_name, valid_until) auf die neue
+    # Zeile übertragen -> dasselbe Angebot löst kein zweites Mal eine Benachrichtigung aus.
+    assert mock_notify.call_count == 1
 
 
 def test_run_source_survives_notify_failure(client):

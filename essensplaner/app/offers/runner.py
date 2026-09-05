@@ -48,8 +48,18 @@ def run_source(source: str, db: Session, plz: str, store_url: str | None = None)
         db.refresh(config)
         return config
 
+    # Vor dem Löschen: bereits benachrichtigte Angebote merken. Identität über
+    # (product_name, valid_until), da Delete-then-Replace sonst jede Zeile mit
+    # frischem notified_at=NULL neu anlegt und dieselbe wöchentliche Aktion bei
+    # jedem Lauf erneut benachrichtigt würde.
+    previously_notified = {
+        (o.product_name, o.valid_until)
+        for o in db.query(Offer).filter(Offer.source == source, Offer.notified_at.isnot(None)).all()
+    }
+
     db.query(Offer).filter(Offer.source == source).delete()
     for offer_data in results:
+        carried_notified_at = now if (offer_data.product_name, offer_data.valid_until) in previously_notified else None
         db.add(Offer(
             retailer=offer_data.retailer,
             source=source,
@@ -60,6 +70,7 @@ def run_source(source: str, db: Session, plz: str, store_url: str | None = None)
             valid_from=offer_data.valid_from,
             valid_until=offer_data.valid_until,
             scraped_at=now,
+            notified_at=carried_notified_at,
         ))
 
     db.flush()  # ohne Flush sieht die folgende Query die eben hinzugefügten Zeilen nicht (autoflush ist in Tests aus)
@@ -69,7 +80,7 @@ def run_source(source: str, db: Session, plz: str, store_url: str | None = None)
         lines = [f"- {o.product_name}" + (f" ({o.discount_text})" if o.discount_text else "") for o in matched]
         message = f"{len(matched)} neue Angebote zu deiner Merkliste ({source}):\n" + "\n".join(lines)
         try:
-            asyncio.run(ha_client.notify(message))
+            asyncio.run(ha_client.notify(message, source=source))
         except Exception:
             logger.exception("Benachrichtigung für %s fehlgeschlagen", source)
             pass  # Benachrichtigung ist ein Nice-to-have, darf den Lauf nicht scheitern lassen
