@@ -422,13 +422,7 @@
   </section>
 
   <section id="tab-ingredients" class="panel">
-    <div class="card">
-      <table>
-        <thead><tr><th>Zutat</th><th>Preis</th></tr></thead>
-        <tbody id="ingredients-body"></tbody>
-      </table>
-      <p class="hint">Preisübersicht folgt, sobald Preise erfasst werden können.</p>
-    </div>
+    <div id="artikel-list"></div>
   </section>
 
   <section id="tab-settings" class="panel">
@@ -562,24 +556,62 @@
       }
     });
 
-    function renderIngredientList(recipes) {
-      const seen = new Map();
-      for (const r of recipes) {
-        for (const ing of r.ingredients) {
-          const key = ing.name.trim().toLowerCase();
-          if (key && !seen.has(key)) seen.set(key, ing.name.trim());
-        }
+    async function loadArtikelOverview() {
+      const container = document.getElementById('artikel-list');
+      try {
+        const res = await fetch('api/artikel');
+        if (!res.ok) throw new Error(await res.text());
+        const artikel = await res.json();
+        renderArtikelOverview(artikel);
+      } catch (e) {
+        container.innerHTML = `<p class="empty">Fehler beim Laden: ${escapeHtml(e.message)}</p>`;
       }
-      const names = [...seen.values()].sort((a, b) => a.localeCompare(b, 'de'));
-      const body = document.getElementById('ingredients-body');
-      if (!names.length) {
-        body.innerHTML = '<tr><td colspan="2" class="empty">Keine Zutaten vorhanden.</td></tr>';
+    }
+
+    function renderArtikelOverview(artikel) {
+      const container = document.getElementById('artikel-list');
+      if (!artikel.length) {
+        container.innerHTML = '<p class="empty">Noch keine Artikel vorhanden.</p>';
         return;
       }
-      body.innerHTML = names.map(n =>
-        `<tr><td>${escapeHtml(n)}</td><td class="placeholder">– noch nicht erfasst</td></tr>`
-      ).join('');
+      container.innerHTML = artikel.map(a => {
+        const thumb = a.image_path
+          ? `<img class="recipe-thumb" src="${escapeHtml(a.image_path)}" alt="">`
+          : `<div class="recipe-thumb-placeholder">🛒</div>`;
+        const priceText = a.last_price != null
+          ? `${a.last_price.toFixed(2)} €`
+          : (a.last_discount_text || 'kein Preis erfasst');
+        return `
+          <div class="card recipe-card" data-artikel-history="${a.id}">
+            ${thumb}
+            <div class="recipe-card-body">
+              <p class="recipe-title">${escapeHtml(a.name)}</p>
+              <p class="recipe-meta">${escapeHtml(priceText)}</p>
+            </div>
+          </div>
+          <div class="artikel-history" id="artikel-history-${a.id}" style="display:none;"></div>`;
+      }).join('');
     }
+
+    document.getElementById('artikel-list').addEventListener('click', async (e) => {
+      const card = e.target.closest('[data-artikel-history]');
+      if (!card) return;
+      const id = card.dataset.artikelHistory;
+      const historyEl = document.getElementById(`artikel-history-${id}`);
+      if (historyEl.style.display === 'block') {
+        historyEl.style.display = 'none';
+        return;
+      }
+      const res = await fetch(`api/artikel/${id}/history`);
+      const entries = await res.json();
+      historyEl.innerHTML = entries.length
+        ? '<ul class="ingredients">' + entries.map(h => {
+            const price = h.price != null ? `${h.price.toFixed(2)} €` : '';
+            return `<li>${escapeHtml(h.valid_from)} – ${escapeHtml(h.valid_until)}: ${price} ${escapeHtml(h.discount_text || '')} (${escapeHtml(h.retailer)})</li>`;
+          }).join('') + '</ul>'
+        : '<p class="placeholder">Noch keine Preis-Historie.</p>';
+      historyEl.style.display = 'block';
+    });
 
     async function loadRecipes() {
       try {
@@ -587,7 +619,6 @@
         if (!res.ok) throw new Error(await res.text());
         const recipes = await res.json();
         renderRecipes(recipes);
-        renderIngredientList(recipes);
       } catch (e) {
         document.getElementById('recipes-list').innerHTML =
           `<p class="empty">Fehler beim Laden der Rezepte: ${escapeHtml(e.message)}</p>`;
@@ -1426,6 +1457,7 @@
     loadRecipes();
     loadSettings();
     loadFridge();
+    loadArtikelOverview();
   </script>
 </body>
 </html>

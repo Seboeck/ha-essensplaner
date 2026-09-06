@@ -50,6 +50,7 @@ from offers.runner import run_source, get_or_create_source_config, CONNECTORS
 from offers.scheduler import start_scheduler
 from offers.matching import find_matching_recipe_ids, is_watchlist_match
 from artikel_matching import resolve_artikel
+from artikel_images import ARTIKEL_IMAGES_DIR
 
 app = FastAPI(title="Essensplaner")
 
@@ -971,4 +972,5 @@ def list_offers(retailer: str | None = None, source: str | None = None, db: Sess
 
 
 app.mount("/recipe-images", StaticFiles(directory=str(IMAGES_DIR)), name="recipe-images")
+app.mount("/artikel-images", StaticFiles(directory=str(ARTIKEL_IMAGES_DIR)), name="artikel-images")
 app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
