@@ -399,6 +399,12 @@
       <div id="offer-sources-list"></div>
     </div>
 
+    <div class="card">
+      <p class="recipe-title">Unsichere Zuordnungen</p>
+      <p class="hint">Diese Angebote passen nur ungefähr zu einem bestehenden Artikel.</p>
+      <div id="pending-matches-list"></div>
+    </div>
+
     <div class="toolbar">
       <select id="offers-filter-retailer">
         <option value="">Alle Händler</option>
@@ -1341,6 +1347,37 @@
       }
     });
 
+    async function loadPendingMatches() {
+      const container = document.getElementById('pending-matches-list');
+      const res = await fetch('api/artikel/pending-matches');
+      const items = await res.json();
+      if (!items.length) {
+        container.innerHTML = '<p class="empty">Keine offenen Zuordnungen.</p>';
+        return;
+      }
+      container.innerHTML = items.map(p => `
+        <div class="card fridge-item">
+          <p class="recipe-title">${escapeHtml(p.product_name)}</p>
+          <p class="recipe-meta">könnte zu "${escapeHtml(p.artikel_name)}" gehören (${escapeHtml(p.retailer)}, Score ${Math.round(p.score)})</p>
+          <div class="fridge-actions">
+            <button class="secondary" data-confirm-pending="${p.id}">Bestätigen</button>
+            <button class="secondary" data-reject-pending="${p.id}">Ablehnen</button>
+          </div>
+        </div>`).join('');
+    }
+
+    document.getElementById('pending-matches-list').addEventListener('click', async (e) => {
+      const confirmBtn = e.target.closest('[data-confirm-pending]');
+      const rejectBtn = e.target.closest('[data-reject-pending]');
+      if (confirmBtn) {
+        await fetch(`api/artikel/pending-matches/${confirmBtn.dataset.confirmPending}/confirm`, { method: 'POST' });
+        loadPendingMatches();
+      } else if (rejectBtn) {
+        await fetch(`api/artikel/pending-matches/${rejectBtn.dataset.rejectPending}/reject`, { method: 'POST' });
+        loadPendingMatches();
+      }
+    });
+
     async function loadOffers() {
       const container = document.getElementById('offers-list');
       const retailer = document.getElementById('offers-filter-retailer').value;
@@ -1383,6 +1420,7 @@
     loadOfferSettings();
     loadWatchlist();
     loadOfferSources();
+    loadPendingMatches();
     loadOffers();
 
     loadRecipes();
