@@ -40,10 +40,10 @@ def _record_artikel_match(offer_data, source: str, db: Session, now: str) -> Non
     Warteschlange. Niedrige Konfidenz wird ignoriert (kein bekannter Artikel
     passt)."""
     match = resolve_artikel(offer_data.product_name, db)
+    db.flush()  # ohne Flush sehen die folgenden Duplikat-Prüfungen (Preis-Historie wie Warteschlange) Zeilen nicht, die im selben Lauf schon (aber noch nicht committed) hinzugefügt wurden
 
     if match.confidence == "high":
         artikel = match.artikel
-        db.flush()  # ohne Flush sieht die Duplikat-Prüfung Zeilen nicht, die im selben Lauf schon (aber noch nicht committed) hinzugefügt wurden
         duplicate = (
             db.query(ArtikelPriceHistory)
             .filter(

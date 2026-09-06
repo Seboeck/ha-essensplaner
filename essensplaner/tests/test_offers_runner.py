@@ -180,6 +180,33 @@ def test_run_source_dedups_price_history_within_same_run(client):
     assert len(history) == 1  # beide Angebote im selben Lauf matchen denselben Artikel -> nur 1 Eintrag
 
 
+def test_run_source_dedups_pending_match_within_same_run(client):
+    """Dieselbe Konfidenz-Lücke wie bei der Preis-Historie (autoflush=False)
+    betrifft auch die Bestätigungs-Warteschlange: zwei Angebote mit
+    identischem Produktnamen im selben Lauf, die beide mittel-konfident auf
+    denselben Artikel matchen, duerfen nicht zwei offene Warteschlangen-
+    Einträge erzeugen — die "existing"-Prüfung muss die im selben Lauf
+    bereits (aber noch nicht committete) hinzugefügte Zeile sehen."""
+    from models import PendingArtikelMatch
+    db = _db(client)
+    _mk_artikel(db, "Paprika rot")
+
+    fake_offers = [
+        OfferData(retailer="kaufland", product_name="Paprikapulver",
+                  valid_from=date(2026, 9, 7), valid_until=date(2026, 9, 13), price=0.99),
+        OfferData(retailer="kaufland", product_name="Paprikapulver",
+                  valid_from=date(2026, 9, 7), valid_until=date(2026, 9, 13), price=1.29),
+    ]
+    with patch("offers.kaufland_scraper.fetch_offers", return_value=fake_offers), \
+         patch("ha_client.notify", new_callable=AsyncMock):
+        run_source("kaufland_scraper", db, plz="12345")
+
+    db2 = _db(client)
+    pending = db2.query(PendingArtikelMatch).filter(PendingArtikelMatch.product_name == "Paprikapulver").all()
+    assert len(pending) == 1  # beide Angebote im selben Lauf matchen denselben Artikel -> nur 1 offener Eintrag
+    assert pending[0].price == 1.29  # zweites (spaeteres) Angebot hat den Eintrag aktualisiert, nicht dupliziert
+
+
 def test_run_source_creates_pending_match_for_medium_confidence(client):
     from models import PendingArtikelMatch
     db = _db(client)
