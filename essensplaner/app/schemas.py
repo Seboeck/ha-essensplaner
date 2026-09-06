@@ -238,3 +238,15 @@ class ArtikelPriceHistoryOut(BaseModel):
     valid_from: str
     valid_until: str
     recorded_at: str
+
+
+class PendingArtikelMatchOut(BaseModel):
+    id: int
+    product_name: str
+    artikel_id: int
+    artikel_name: str
+    score: float
+    retailer: str
+    source: str
+    valid_from: str
+    valid_until: str

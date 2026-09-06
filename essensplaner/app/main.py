@@ -42,6 +42,7 @@ from schemas import (
     ArtikelOut,
     ArtikelSuggestOut,
     ArtikelPriceHistoryOut,
+    PendingArtikelMatchOut,
 )
 import ha_client
 from planner import generate_week_plan, aggregate_shopping_list
@@ -185,6 +186,58 @@ def suggest_artikel(q: str, db: Session = Depends(get_db)):
             for a, _ in match.candidates
         ]
     return []
+
+
+# ---------- Bestätigungs-Warteschlange (unsichere Angebots-Zuordnungen) ----------
+# Muss vor "/api/artikel/{artikel_id}" registriert sein, sonst versucht
+# FastAPI "pending-matches" als int-Pfadparameter zu parsen (422) statt
+# hierher zu routen (siehe Kommentar bei suggest_artikel oben).
+
+def _pending_match_out(p: PendingArtikelMatch) -> PendingArtikelMatchOut:
+    return PendingArtikelMatchOut(
+        id=p.id, product_name=p.product_name, artikel_id=p.artikel_id, artikel_name=p.artikel.name,
+        score=p.score, retailer=p.retailer, source=p.source,
+        valid_from=p.valid_from.isoformat(), valid_until=p.valid_until.isoformat(),
+    )
+
+
+@app.get("/api/artikel/pending-matches", response_model=list[PendingArtikelMatchOut])
+def list_pending_matches(db: Session = Depends(get_db)):
+    pending = (
+        db.query(PendingArtikelMatch)
+        .filter(PendingArtikelMatch.status == "open")
+        .order_by(PendingArtikelMatch.score.desc())
+        .all()
+    )
+    return [_pending_match_out(p) for p in pending]
+
+
+@app.post("/api/artikel/pending-matches/{pending_id}/confirm", response_model=PendingArtikelMatchOut)
+def confirm_pending_match(pending_id: int, db: Session = Depends(get_db)):
+    pending = db.query(PendingArtikelMatch).get(pending_id)
+    if not pending:
+        raise HTTPException(404, "Eintrag nicht gefunden")
+    pending.status = "confirmed"
+    db.add(ArtikelPriceHistory(
+        artikel_id=pending.artikel_id, price=pending.price, discount_text=pending.discount_text,
+        retailer=pending.retailer, source=pending.source,
+        valid_from=pending.valid_from, valid_until=pending.valid_until,
+        recorded_at=datetime.utcnow().isoformat(),
+    ))
+    db.commit()
+    db.refresh(pending)
+    return _pending_match_out(pending)
+
+
+@app.post("/api/artikel/pending-matches/{pending_id}/reject", response_model=PendingArtikelMatchOut)
+def reject_pending_match(pending_id: int, db: Session = Depends(get_db)):
+    pending = db.query(PendingArtikelMatch).get(pending_id)
+    if not pending:
+        raise HTTPException(404, "Eintrag nicht gefunden")
+    pending.status = "rejected"
+    db.commit()
+    db.refresh(pending)
+    return _pending_match_out(pending)
 
 
 @app.get("/api/artikel/{artikel_id}", response_model=ArtikelOut)
