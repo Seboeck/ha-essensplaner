@@ -1053,10 +1053,10 @@
         const missing = !i.in_stock ? '<span class="tag missing-tag">fehlt</span>' : '';
         const stockBtn = i.in_stock
           ? `<button class="secondary" data-remove-fridge="${i.id}">Verbraucht / entfernen</button>`
-          : `<button class="secondary" data-restock="${escapeHtml(i.name)}" data-restock-unit="${escapeHtml(i.unit || '')}">Als vorhanden markieren</button>`;
+          : `<button class="secondary" data-restock-artikel="${i.artikel_id}" data-restock-unit="${escapeHtml(i.unit || '')}">Als vorhanden markieren</button>`;
         const stapleBtn = i.is_staple
-          ? `<button class="secondary" data-unstaple="${escapeHtml(i.name)}">Kein Standardartikel mehr</button>`
-          : `<button class="secondary" data-stapleize="${escapeHtml(i.name)}" data-stapleize-unit="${escapeHtml(i.unit || '')}">Als Standardartikel markieren</button>`;
+          ? `<button class="secondary" data-unstaple-artikel="${i.artikel_id}">Kein Standardartikel mehr</button>`
+          : `<button class="secondary" data-stapleize-artikel="${i.artikel_id}" data-stapleize-unit="${escapeHtml(i.unit || '')}">Als Standardartikel markieren</button>`;
         return `
           <div class="card fridge-item ${!i.in_stock ? 'missing' : ''}">
             <p class="recipe-title">${escapeHtml(i.name)}</p>
@@ -1067,6 +1067,10 @@
       }).join('');
     }
 
+    let fridgeArtikelId = null;
+    attachArtikelAutocomplete(document.getElementById('fridge-name'), (id) => { fridgeArtikelId = id; });
+    document.getElementById('fridge-name').addEventListener('input', () => { fridgeArtikelId = null; });
+
     document.getElementById('fridge-add').addEventListener('click', async () => {
       const nameInput = document.getElementById('fridge-name');
       const amountInput = document.getElementById('fridge-amount');
@@ -1074,8 +1078,11 @@
       const stapleInput = document.getElementById('fridge-staple');
       const msg = document.getElementById('fridge-msg');
 
-      const name = nameInput.value.trim();
-      if (!name) return;
+      if (!fridgeArtikelId) {
+        msg.textContent = 'Bitte einen Artikel aus der Liste wählen oder neu anlegen.';
+        msg.className = 'msg err';
+        return;
+      }
       const amountRaw = amountInput.value.trim();
       const unit = unitInput.value.trim();
 
@@ -1084,7 +1091,7 @@
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            name,
+            artikel_id: fridgeArtikelId,
             amount: amountRaw ? parseFloat(amountRaw.replace(',', '.')) : null,
             unit: unit || null,
           }),
@@ -1095,7 +1102,7 @@
           await fetch('api/fridge/staples', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name, unit: unit || null }),
+            body: JSON.stringify({ artikel_id: fridgeArtikelId, unit: unit || null }),
           });
         }
 
@@ -1103,6 +1110,7 @@
         amountInput.value = '';
         unitInput.value = '';
         stapleInput.checked = false;
+        fridgeArtikelId = null;
         msg.className = 'msg';
         loadFridge();
       } catch (e) {
@@ -1113,9 +1121,9 @@
 
     document.getElementById('fridge-list').addEventListener('click', async (e) => {
       const removeBtn = e.target.closest('[data-remove-fridge]');
-      const restockBtn = e.target.closest('[data-restock]');
-      const stapleizeBtn = e.target.closest('[data-stapleize]');
-      const unstapleBtn = e.target.closest('[data-unstaple]');
+      const restockBtn = e.target.closest('[data-restock-artikel]');
+      const stapleizeBtn = e.target.closest('[data-stapleize-artikel]');
+      const unstapleBtn = e.target.closest('[data-unstaple-artikel]');
 
       if (removeBtn) {
         await fetch(`api/fridge/items/${removeBtn.dataset.removeFridge}`, { method: 'DELETE' });
@@ -1124,18 +1132,24 @@
         await fetch('api/fridge/items', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: restockBtn.dataset.restock, amount: null, unit: restockBtn.dataset.restockUnit || null }),
+          body: JSON.stringify({
+            artikel_id: parseInt(restockBtn.dataset.restockArtikel, 10),
+            amount: null, unit: restockBtn.dataset.restockUnit || null,
+          }),
         });
         loadFridge();
       } else if (stapleizeBtn) {
         await fetch('api/fridge/staples', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: stapleizeBtn.dataset.stapleize, unit: stapleizeBtn.dataset.stapleizeUnit || null }),
+          body: JSON.stringify({
+            artikel_id: parseInt(stapleizeBtn.dataset.stapleizeArtikel, 10),
+            unit: stapleizeBtn.dataset.stapleizeUnit || null,
+          }),
         });
         loadFridge();
       } else if (unstapleBtn) {
-        await fetch(`api/fridge/staples/by-name/${encodeURIComponent(unstapleBtn.dataset.unstaple)}`, { method: 'DELETE' });
+        await fetch(`api/fridge/staples/by-artikel/${unstapleBtn.dataset.unstapleArtikel}`, { method: 'DELETE' });
         loadFridge();
       }
     });
@@ -1190,18 +1204,28 @@
         </div>`).join('');
     }
 
+    let watchlistArtikelId = null;
+    attachArtikelAutocomplete(document.getElementById('watchlist-name'), (id) => { watchlistArtikelId = id; });
+    document.getElementById('watchlist-name').addEventListener('input', () => { watchlistArtikelId = null; });
+
     document.getElementById('watchlist-add').addEventListener('click', async () => {
       const nameInput = document.getElementById('watchlist-name');
       const unitInput = document.getElementById('watchlist-unit');
-      const name = nameInput.value.trim();
-      if (!name) return;
+      const msg = document.getElementById('watchlist-msg');
+      if (!watchlistArtikelId) {
+        msg.textContent = 'Bitte einen Artikel aus der Liste wählen oder neu anlegen.';
+        msg.className = 'msg err';
+        return;
+      }
       await fetch('api/watchlist', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, unit: unitInput.value.trim() || null }),
+        body: JSON.stringify({ artikel_id: watchlistArtikelId, unit: unitInput.value.trim() || null }),
       });
       nameInput.value = '';
       unitInput.value = '';
+      watchlistArtikelId = null;
+      msg.className = 'msg';
       loadWatchlist();
     });
 
