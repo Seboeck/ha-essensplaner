@@ -310,6 +310,11 @@
       <div id="conflicts-list"></div>
       <button id="apply-import" class="primary">Import abschließen</button>
     </div>
+    <div id="import-ingredient-ambiguities" class="card" style="display:none;">
+      <p class="recipe-title">Import: unklare Zutaten-Zuordnung</p>
+      <p class="hint">Diese Zutaten passen nur ungefähr zu einem bestehenden Artikel. Bitte wählen oder neu anlegen.</p>
+      <div id="ambiguities-list"></div>
+    </div>
     <div id="photo-import-msg" class="msg"></div>
     <div id="photo-review" class="card" style="display:none;">
       <p class="recipe-title">Foto-Import: Rezept prüfen</p>
@@ -721,6 +726,33 @@
 
     document.getElementById('import-trigger').addEventListener('click', () => importFileInput.click());
 
+    let pendingIngredientAmbiguities = [];
+
+    function renderIngredientAmbiguities(ambiguities) {
+      pendingIngredientAmbiguities = ambiguities;
+      const panel = document.getElementById('import-ingredient-ambiguities');
+      const list = document.getElementById('ambiguities-list');
+      if (!ambiguities.length) {
+        panel.style.display = 'none';
+        list.innerHTML = '';
+        return;
+      }
+      list.innerHTML = ambiguities.map((a, i) => {
+        const options = a.candidates.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('');
+        return `
+          <div class="conflict-row" data-ambiguity-index="${i}">
+            <div>
+              <div class="conflict-title">${escapeHtml(a.ingredient_name)}</div>
+            </div>
+            <select class="ambiguity-select">
+              ${options}
+              <option value="new">Neuen Artikel "${escapeHtml(a.ingredient_name)}" anlegen</option>
+            </select>
+          </div>`;
+      }).join('');
+      panel.style.display = 'block';
+    }
+
     importFileInput.addEventListener('change', async () => {
       const file = importFileInput.files[0];
       if (!file) return;
@@ -743,10 +775,13 @@
         if (!previewRes.ok) throw new Error(await previewRes.text());
         const preview = await previewRes.json();
 
-        if (preview.conflicts.length === 0) {
-          await runImportApply([]);
+        renderIngredientAmbiguities(preview.ingredient_ambiguities || []);
+
+        if (preview.conflicts.length === 0 && !(preview.ingredient_ambiguities || []).length) {
+          await runImportApply([], []);
         } else {
           renderConflicts(preview.conflicts);
+          conflictsPanel.style.display = 'block';
         }
       } catch (e) {
         showImportMsg('Fehler beim Import: ' + e.message, false);
@@ -778,15 +813,45 @@
         const checked = row.querySelector('input[type="radio"]:checked');
         return { import_index: index, action: checked ? checked.value : 'alt' };
       });
-      await runImportApply(resolutions);
+
+      const ingredientResolutions = [];
+      const ambiguityRows = document.querySelectorAll('#ambiguities-list .conflict-row');
+      for (const row of ambiguityRows) {
+        const idx = parseInt(row.dataset.ambiguityIndex, 10);
+        const ambiguity = pendingIngredientAmbiguities[idx];
+        const select = row.querySelector('.ambiguity-select');
+        let artikelId;
+        if (select.value === 'new') {
+          const res = await fetch('api/artikel', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: ambiguity.ingredient_name }),
+          });
+          const artikel = await res.json();
+          artikelId = artikel.id;
+        } else {
+          artikelId = parseInt(select.value, 10);
+        }
+        ingredientResolutions.push({
+          recipe_index: ambiguity.recipe_index,
+          ingredient_index: ambiguity.ingredient_index,
+          artikel_id: artikelId,
+        });
+      }
+
+      await runImportApply(resolutions, ingredientResolutions);
     });
 
-    async function runImportApply(resolutions) {
+    async function runImportApply(resolutions, ingredientResolutions) {
       try {
         const res = await fetch('api/recipes/import/apply', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ recipes: pendingImportRecipes, resolutions }),
+          body: JSON.stringify({
+            recipes: pendingImportRecipes,
+            resolutions,
+            ingredient_resolutions: ingredientResolutions || [],
+          }),
         });
         if (!res.ok) throw new Error(await res.text());
         const result = await res.json();
@@ -795,7 +860,9 @@
           true
         );
         conflictsPanel.style.display = 'none';
+        document.getElementById('import-ingredient-ambiguities').style.display = 'none';
         pendingImportRecipes = null;
+        pendingIngredientAmbiguities = [];
         loadRecipes();
       } catch (e) {
         showImportMsg('Fehler beim Import: ' + e.message, false);
