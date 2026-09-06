@@ -107,6 +107,15 @@
   .ingredient-row .ing-amount { flex: 1; }
   .ingredient-row .ing-unit { flex: 1; }
   .ingredient-row button { flex: 0 0 auto; }
+  .artikel-autocomplete-wrap { position: relative; flex: 2; }
+  .artikel-suggest-dropdown {
+    position: absolute; top: 100%; left: 0; right: 0; z-index: 10;
+    background: var(--card-bg); border: 1px solid var(--border);
+    border-radius: 4px; max-height: 200px; overflow-y: auto;
+  }
+  .artikel-suggest-item { padding: 6px 10px; cursor: pointer; }
+  .artikel-suggest-item:hover { background: var(--bg); }
+  .artikel-suggest-new { font-style: italic; border-top: 1px solid var(--border); }
   .hint { color: var(--muted); font-size: 0.85rem; margin-top: 4px; }
   .hint a { color: var(--accent); }
   button.primary {
@@ -793,6 +802,81 @@
       }
     }
 
+    // ---------- Artikel-Autocomplete (wiederverwendbare Komponente) ----------
+    // Verwandelt ein Text-Input in ein Autocomplete-Feld gegen
+    // /api/artikel/suggest. onSelect(artikelId, name) wird aufgerufen,
+    // sobald ein bestehender Artikel gewählt oder ein neuer angelegt wurde.
+    function attachArtikelAutocomplete(inputEl, onSelect) {
+      const wrap = document.createElement('div');
+      wrap.className = 'artikel-autocomplete-wrap';
+      inputEl.parentNode.insertBefore(wrap, inputEl);
+      wrap.appendChild(inputEl);
+
+      const dropdown = document.createElement('div');
+      dropdown.className = 'artikel-suggest-dropdown';
+      dropdown.style.display = 'none';
+      wrap.appendChild(dropdown);
+
+      let debounceTimer = null;
+
+      async function search(query) {
+        if (!query.trim()) {
+          dropdown.style.display = 'none';
+          return;
+        }
+        const res = await fetch('api/artikel/suggest?q=' + encodeURIComponent(query));
+        const suggestions = res.ok ? await res.json() : [];
+        renderDropdown(suggestions, query);
+      }
+
+      function renderDropdown(suggestions, query) {
+        const items = suggestions.map(s => `
+          <div class="artikel-suggest-item" data-artikel-id="${s.id}" data-artikel-name="${escapeHtml(s.name)}">${escapeHtml(s.name)}</div>
+        `);
+        items.push(`<div class="artikel-suggest-item artikel-suggest-new" data-new="${escapeHtml(query)}">+ Neuen Artikel "${escapeHtml(query)}" anlegen</div>`);
+        dropdown.innerHTML = items.join('');
+        dropdown.style.display = 'block';
+      }
+
+      inputEl.addEventListener('input', () => {
+        clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => search(inputEl.value), 250);
+      });
+
+      inputEl.addEventListener('blur', () => {
+        setTimeout(() => { dropdown.style.display = 'none'; }, 150);
+      });
+
+      dropdown.addEventListener('mousedown', async (e) => {
+        const item = e.target.closest('.artikel-suggest-item');
+        if (!item) return;
+        e.preventDefault();
+        if (item.dataset.new !== undefined) {
+          const res = await fetch('api/artikel', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: item.dataset.new }),
+          });
+          if (!res.ok) return;
+          const artikel = await res.json();
+          inputEl.value = artikel.name;
+          onSelect(artikel.id, artikel.name);
+        } else {
+          inputEl.value = item.dataset.artikelName;
+          onSelect(parseInt(item.dataset.artikelId, 10), item.dataset.artikelName);
+        }
+        dropdown.style.display = 'none';
+      });
+    }
+
+    async function suggestSingleHighConfidence(name) {
+      if (!name) return null;
+      const res = await fetch('api/artikel/suggest?q=' + encodeURIComponent(name));
+      if (!res.ok) return null;
+      const suggestions = await res.json();
+      return (suggestions.length === 1 && suggestions[0].confidence === 'high') ? suggestions[0] : null;
+    }
+
     // ---------- Foto-Import ----------
     const photoImportFile = document.getElementById('photo-import-file');
     const photoImportMsg = document.getElementById('photo-import-msg');
@@ -810,6 +894,7 @@
       ing = ing || { name: '', amount: '', unit: '' };
       const row = document.createElement('div');
       row.className = 'ingredient-row';
+      row.dataset.artikelId = ing.artikel_id || '';
       row.innerHTML = `
         <input type="text" class="ing-name" placeholder="Zutat" value="${escapeHtml(ing.name || '')}">
         <input type="text" class="ing-amount" placeholder="Menge" value="${ing.amount ?? ''}">
@@ -817,12 +902,18 @@
         <button type="button" class="secondary">✕</button>
       `;
       row.querySelector('button').addEventListener('click', () => row.remove());
+      const nameInput = row.querySelector('.ing-name');
+      attachArtikelAutocomplete(nameInput, (artikelId) => {
+        row.dataset.artikelId = artikelId;
+      });
+      nameInput.addEventListener('input', () => { row.dataset.artikelId = ''; });
       prIngredients.appendChild(row);
+      return row;
     }
 
     document.getElementById('pr-add-ingredient').addEventListener('click', () => addIngredientRow());
 
-    function fillReviewForm(recipe) {
+    async function fillReviewForm(recipe) {
       document.getElementById('pr-title').value = recipe.title || '';
       document.getElementById('pr-servings').value = recipe.base_servings || 4;
       document.getElementById('pr-tags').value = recipe.tags || '';
@@ -830,7 +921,14 @@
       prIngredients.innerHTML = '';
       const ingredients = recipe.ingredients || [];
       if (ingredients.length) {
-        ingredients.forEach(addIngredientRow);
+        for (const ing of ingredients) {
+          const row = addIngredientRow(ing);
+          const match = await suggestSingleHighConfidence(ing.name);
+          if (match) {
+            row.dataset.artikelId = match.id;
+            row.querySelector('.ing-name').value = match.name;
+          }
+        }
       } else {
         addIngredientRow();
       }
@@ -868,16 +966,26 @@
     });
 
     document.getElementById('pr-save').addEventListener('click', async () => {
-      const ingredients = [...prIngredients.querySelectorAll('.ingredient-row')].map(row => {
-        const name = row.querySelector('.ing-name').value.trim();
-        const amountRaw = row.querySelector('.ing-amount').value.trim();
-        const unit = row.querySelector('.ing-unit').value.trim();
-        return {
-          name,
-          amount: amountRaw ? parseFloat(amountRaw.replace(',', '.')) : null,
-          unit: unit || null,
-        };
-      }).filter(i => i.name);
+      const rows = [...prIngredients.querySelectorAll('.ingredient-row')];
+      const unresolvedRow = rows.find(row =>
+        row.querySelector('.ing-name').value.trim() && !row.dataset.artikelId
+      );
+      if (unresolvedRow) {
+        showPhotoMsg('Bitte für jede Zutat einen Artikel aus der Liste wählen oder neu anlegen.', false);
+        return;
+      }
+
+      const ingredients = rows
+        .filter(row => row.dataset.artikelId)
+        .map(row => {
+          const amountRaw = row.querySelector('.ing-amount').value.trim();
+          const unit = row.querySelector('.ing-unit').value.trim();
+          return {
+            artikel_id: parseInt(row.dataset.artikelId, 10),
+            amount: amountRaw ? parseFloat(amountRaw.replace(',', '.')) : null,
+            unit: unit || null,
+          };
+        });
 
       const title = document.getElementById('pr-title').value.trim();
       if (!title) {
