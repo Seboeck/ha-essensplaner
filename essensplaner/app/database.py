@@ -110,7 +110,18 @@ def _populate_artikel_from_legacy_tables():
             artikel_by_norm[norm] = artikel_id
             return artikel_id
 
+        # Fremdschlüssel-Ziel vorab einlesen: seit PRAGMA foreign_keys=ON
+        # (siehe Engine-Connect-Hook unten) crasht ein INSERT mit ungültiger
+        # recipe_id sofort mit IntegrityError — INSERT OR IGNORE fängt das
+        # NICHT ab (ON CONFLICT-Klauseln gelten nicht für FK-Verletzungen).
+        # Eine verwaiste Zutat (Rezept existiert nicht mehr, z.B. durch einen
+        # historischen Bug vor Fix A der Rezept-Lösch-Route) wird daher hier
+        # bewusst übersprungen, statt die gesamte Migration abstürzen zu
+        # lassen.
+        valid_recipe_ids = {row[0] for row in conn.execute(text("SELECT id FROM recipes"))}
         for row in conn.execute(text("SELECT id, recipe_id, name, amount, unit FROM ingredients_old")):
+            if row.recipe_id not in valid_recipe_ids:
+                continue
             artikel_id = get_or_create_artikel(row.name)
             conn.execute(
                 text("INSERT OR IGNORE INTO ingredients (id, recipe_id, artikel_id, amount, unit) "

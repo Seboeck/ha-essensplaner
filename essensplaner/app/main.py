@@ -738,9 +738,10 @@ async def generate_plan(start: date, db: Session = Depends(get_db)):
 
     # in Home-Assistant-Kalender schreiben
     settings = get_settings(db)
+    known_titles = {r[0] for r in db.query(Recipe.title).all()}
     for entry in entries:
         await ha_client.upsert_calendar_event(
-            settings.calendar_entity, entry.date.isoformat(), entry.recipe.title
+            settings.calendar_entity, entry.date.isoformat(), entry.recipe.title, known_titles=known_titles
         )
 
     return [
@@ -776,7 +777,10 @@ async def swap_day(entry_date: date, recipe_id: int, db: Session = Depends(get_d
     entry.recipe_id = recipe_id
     db.commit()
     settings = get_settings(db)
-    await ha_client.upsert_calendar_event(settings.calendar_entity, entry_date.isoformat(), entry.recipe.title)
+    known_titles = {r[0] for r in db.query(Recipe.title).all()}
+    await ha_client.upsert_calendar_event(
+        settings.calendar_entity, entry_date.isoformat(), entry.recipe.title, known_titles=known_titles
+    )
     return {"status": "ok"}
 
 

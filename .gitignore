@@ -6,3 +6,9 @@ __pycache__/
 venv/
 *.egg-info/
 .DS_Store
+
+# Von Tests erzeugte Artefakte (Bild-Downloads/-Uploads ohne isolierten
+# tmp_path, z.B. wenn ein Test-Modul-Konstante wie ARTIKEL_IMAGES_DIR/
+# IMAGES_DIR nicht monkeypatcht) - sollen nie versehentlich committet werden.
+essensplaner/tests/artikel-images/
+essensplaner/tests/images/
