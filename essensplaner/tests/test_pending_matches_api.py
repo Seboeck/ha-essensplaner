@@ -98,3 +98,24 @@ def test_reject_after_confirm_returns_409(client):
     client.post(f"/api/artikel/pending-matches/{p.id}/confirm")
     res = client.post(f"/api/artikel/pending-matches/{p.id}/reject")
     assert res.status_code == 409
+
+
+def test_confirm_rejects_other_open_candidates_for_same_product_name(client):
+    db = _db(client)
+    a1 = _mk_artikel(db, "Paprika rot")
+    a2 = _mk_artikel(db, "Paprika grün")
+    p1 = _mk_pending(db, a1.id, product_name="Paprikapulver")
+    p2 = _mk_pending(db, a2.id, product_name="Paprikapulver")  # gleicher Produktname, anderer Kandidat
+
+    res = client.post(f"/api/artikel/pending-matches/{p1.id}/confirm")
+    assert res.status_code == 200
+
+    db2 = _db(client)
+    from models import PendingArtikelMatch
+    refreshed_p2 = db2.query(PendingArtikelMatch).get(p2.id)
+    assert refreshed_p2.status == "rejected"
+
+    open_count = db2.query(PendingArtikelMatch).filter(
+        PendingArtikelMatch.product_name == "Paprikapulver", PendingArtikelMatch.status == "open"
+    ).count()
+    assert open_count == 0

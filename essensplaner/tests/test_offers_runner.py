@@ -246,3 +246,24 @@ def test_run_source_downloads_image_on_first_high_confidence_match(client):
     db2 = _db(client)
     refreshed = db2.query(type(gouda)).get(gouda.id)
     assert refreshed.image_path == "/artikel-images/1.jpg"
+
+
+def test_run_source_records_separate_price_history_per_retailer(client):
+    from models import ArtikelPriceHistory
+    db = _db(client)
+    gouda = _mk_artikel(db, "Gouda")
+
+    fake_kaufland_offers = [OfferData(retailer="kaufland", product_name="Gouda",
+                             valid_from=date(2026, 9, 7), valid_until=date(2026, 9, 13), price=1.99)]
+    fake_edeka_offers = [OfferData(retailer="edeka", product_name="Gouda",
+                          valid_from=date(2026, 9, 7), valid_until=date(2026, 9, 13), price=1.99)]
+    with patch("offers.kaufland_scraper.fetch_offers", return_value=fake_kaufland_offers), \
+         patch("offers.edeka_scraper.fetch_offers", return_value=fake_edeka_offers), \
+         patch("ha_client.notify", new_callable=AsyncMock):
+        run_source("kaufland_scraper", db, plz="12345")
+        run_source("edeka_scraper", db, plz="12345")
+
+    db2 = _db(client)
+    history = db2.query(ArtikelPriceHistory).filter(ArtikelPriceHistory.artikel_id == gouda.id).all()
+    assert len(history) == 2  # gleicher Preis/Zeitraum, aber zwei Händler -> zwei Einträge
+    assert {h.retailer for h in history} == {"kaufland", "edeka"}

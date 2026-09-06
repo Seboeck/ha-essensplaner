@@ -5,6 +5,7 @@ from pathlib import Path
 import anthropic
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 import database
@@ -221,6 +222,15 @@ def confirm_pending_match(pending_id: int, db: Session = Depends(get_db)):
     if pending.status != "open":
         raise HTTPException(409, f"Eintrag ist bereits {pending.status}")
     pending.status = "confirmed"
+
+    # Andere offene Kandidaten für denselben Produktnamen automatisch ablehnen,
+    # damit resolve_artikel() nicht mehrdeutig wird (siehe PR-Review-Befund).
+    db.query(PendingArtikelMatch).filter(
+        func.lower(PendingArtikelMatch.product_name) == pending.product_name.strip().lower(),
+        PendingArtikelMatch.id != pending.id,
+        PendingArtikelMatch.status == "open",
+    ).update({"status": "rejected"})
+
     db.add(ArtikelPriceHistory(
         artikel_id=pending.artikel_id, price=pending.price, discount_text=pending.discount_text,
         retailer=pending.retailer, source=pending.source,
@@ -525,6 +535,8 @@ def apply_import(payload: ImportApplyIn, db: Session = Depends(get_db)):
     angelegt. Für Duplikate entscheidet 'resolutions' pro Index. Zutaten
     werden per artikel_id aufgelöst: explizite 'ingredient_resolutions'
     haben Vorrang, sonst automatische Auflösung (siehe _auto_resolve_artikel_id).
+    Übersprungene Rezepte (Aktion 'alt') lösen keine Zutaten auf und legen
+    keine neuen Artikel an.
     """
     existing_by_title = {_normalize_title(r.title): r for r in db.query(Recipe).all()}
     resolution_by_index = {res.import_index: res.action for res in payload.resolutions}
@@ -532,9 +544,21 @@ def apply_import(payload: ImportApplyIn, db: Session = Depends(get_db)):
         (r.recipe_index, r.ingredient_index): r.artikel_id for r in payload.ingredient_resolutions
     }
 
+    explicit_artikel_ids = set(ingredient_resolution_by_key.values())
+    if explicit_artikel_ids:
+        known_ids = {a.id for a in db.query(Artikel.id).filter(Artikel.id.in_(explicit_artikel_ids)).all()}
+        unknown_ids = explicit_artikel_ids - known_ids
+        if unknown_ids:
+            raise HTTPException(400, f"Unbekannte Artikel-ID(s): {sorted(unknown_ids)}")
+
     imported = overwritten = skipped = 0
 
     for idx, recipe in enumerate(payload.recipes):
+        match = existing_by_title.get(_normalize_title(recipe.title))
+        if match and resolution_by_index.get(idx, "alt") != "neu":
+            skipped += 1
+            continue
+
         ingredient_models = []
         for ing_idx, ing in enumerate(recipe.ingredients):
             artikel_id = ingredient_resolution_by_key.get((idx, ing_idx))
@@ -542,19 +566,14 @@ def apply_import(payload: ImportApplyIn, db: Session = Depends(get_db)):
                 artikel_id = _auto_resolve_artikel_id(ing.name, db)
             ingredient_models.append(Ingredient(artikel_id=artikel_id, amount=ing.amount, unit=ing.unit))
 
-        match = existing_by_title.get(_normalize_title(recipe.title))
         if match:
-            action = resolution_by_index.get(idx, "alt")
-            if action == "neu":
-                match.title = recipe.title
-                match.base_servings = recipe.base_servings
-                match.instructions = recipe.instructions
-                match.is_favorite = recipe.is_favorite
-                match.tags = recipe.tags
-                match.ingredients = ingredient_models
-                overwritten += 1
-            else:
-                skipped += 1
+            match.title = recipe.title
+            match.base_servings = recipe.base_servings
+            match.instructions = recipe.instructions
+            match.is_favorite = recipe.is_favorite
+            match.tags = recipe.tags
+            match.ingredients = ingredient_models
+            overwritten += 1
         else:
             db_recipe = Recipe(
                 title=recipe.title,

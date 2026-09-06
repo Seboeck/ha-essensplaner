@@ -48,6 +48,7 @@ def _record_artikel_match(offer_data, source: str, db: Session, now: str) -> Non
             db.query(ArtikelPriceHistory)
             .filter(
                 ArtikelPriceHistory.artikel_id == artikel.id,
+                ArtikelPriceHistory.retailer == offer_data.retailer,
                 ArtikelPriceHistory.valid_from == offer_data.valid_from,
                 ArtikelPriceHistory.valid_until == offer_data.valid_until,
                 ArtikelPriceHistory.price == offer_data.price,
