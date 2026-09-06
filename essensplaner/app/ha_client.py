@@ -25,9 +25,9 @@ async def _post(path: str, payload: dict):
         return resp.json() if resp.content else None
 
 
-async def _get(path: str):
+async def _get(path: str, params: dict | None = None):
     async with httpx.AsyncClient() as client:
-        resp = await client.get(f"{HA_URL}{path}", headers=HEADERS, timeout=10)
+        resp = await client.get(f"{HA_URL}{path}", headers=HEADERS, params=params, timeout=10)
         resp.raise_for_status()
         return resp.json()
 
@@ -45,8 +45,29 @@ async def list_entities(domain: str) -> list[dict]:
 
 
 async def upsert_calendar_event(calendar_entity: str, date_str: str, title: str):
-    """Legt für einen Tag ein Kalender-Event mit dem Rezeptnamen an (Local Calendar Integration)."""
-    end_date_str = (date.fromisoformat(date_str) + timedelta(days=1)).isoformat()
+    """Legt für einen Tag ein Kalender-Event mit dem Rezeptnamen an (Local
+    Calendar Integration). Ersetzt ein bereits vorhandenes Essensplaner-
+    Event für denselben Tag, damit erneutes Generieren/Tauschen keine
+    doppelten Termine erzeugt."""
+    start_dt = date.fromisoformat(date_str)
+    end_date_str = (start_dt + timedelta(days=1)).isoformat()
+
+    try:
+        existing_events = await _get(
+            f"/api/calendars/{calendar_entity}",
+            params={"start": f"{date_str}T00:00:00", "end": f"{end_date_str}T00:00:00"},
+        )
+    except httpx.HTTPError:
+        existing_events = []  # Abfrage fehlgeschlagen -> trotzdem versuchen, neues Event anzulegen
+
+    for ev in existing_events or []:
+        uid = ev.get("uid")
+        if uid:
+            try:
+                await _post("/api/services/calendar/delete_event", {"entity_id": calendar_entity, "uid": uid})
+            except httpx.HTTPError:
+                pass  # Event evtl. schon weg oder Löschen nicht unterstützt -- Neuanlage trotzdem versuchen
+
     payload = {
         "entity_id": calendar_entity,
         "summary": title,
