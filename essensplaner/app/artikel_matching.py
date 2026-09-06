@@ -59,7 +59,12 @@ def resolve_artikel(name: str, db: Session) -> ArtikelMatch:
             continue
         score = match_score(name, artikel.name)
         if _is_substring_match(name, artikel.name):
-            score = max(score, HIGH_THRESHOLD)
+            # Kompositum-Erkennung hebt einen Treffer nur noch auf "mittel"
+            # (nicht mehr automatisch "hoch"): ein reiner Substring-Treffer
+            # (z.B. "Milch" in "Hafermilch") kann ein völlig anderes Produkt
+            # sein als das gesuchte, deshalb erfordert er eine Nutzer-
+            # Bestätigung statt automatischer Verknüpfung (siehe PR-Review).
+            score = max(score, MEDIUM_THRESHOLD)
         scored.append((artikel, score))
 
     scored.sort(key=lambda pair: pair[1], reverse=True)

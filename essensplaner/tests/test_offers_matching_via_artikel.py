@@ -43,5 +43,9 @@ def test_is_watchlist_match_via_artikel(client):
     db.commit()
 
     assert is_watchlist_match("Frische Milch 1L", db) is True
-    assert is_watchlist_match("Weizenmehl Type 405", db) is True
+    # Kompositum-Substring-Treffer (z.B. "Mehl" in "Weizenmehl") gelten seit dem
+    # PR-Review nur noch als "mittel", nicht mehr automatisch als "hoch" - ein
+    # reiner Substring-Treffer kann ein anderes Produkt sein (z.B. Milch/Hafermilch),
+    # is_watchlist_match() erfordert aber "hoch" (siehe offers/matching.py).
+    assert is_watchlist_match("Weizenmehl Type 405", db) is False
     assert is_watchlist_match("Klopapier 8er Pack", db) is False

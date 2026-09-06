@@ -31,7 +31,11 @@ def test_list_offers_sorts_watchlist_matches_first(client):
 
     fake_offers = [
         OfferData(retailer="kaufland", product_name="Klopapier 8er", valid_from=date.today(), valid_until=date.today() + timedelta(days=5)),
-        OfferData(retailer="kaufland", product_name="Weizenmehl 1kg", valid_from=date.today(), valid_until=date.today() + timedelta(days=2)),
+        # "Mehl 1kg" statt eines reinen Kompositum-Substring-Falls (z.B. "Weizenmehl"):
+        # Substring-Treffer gelten seit dem PR-Review nur noch als "mittel" (siehe
+        # test_artikel_matching.py::test_compound_word_substring_is_medium_not_high),
+        # ein exakter Wort-Treffer wie hier bleibt weiterhin "hoch".
+        OfferData(retailer="kaufland", product_name="Mehl 1kg", valid_from=date.today(), valid_until=date.today() + timedelta(days=2)),
     ]
     with patch("offers.kaufland_scraper.fetch_offers", return_value=fake_offers):
         client.post("/api/offers/refresh/kaufland_scraper")
@@ -40,7 +44,7 @@ def test_list_offers_sorts_watchlist_matches_first(client):
     assert res.status_code == 200
     body = res.json()
     assert len(body) == 2
-    assert body[0]["product_name"] == "Weizenmehl 1kg"
+    assert body[0]["product_name"] == "Mehl 1kg"
     assert body[0]["matched_watchlist"] is True
     assert body[1]["matched_watchlist"] is False
 

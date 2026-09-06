@@ -24,12 +24,17 @@ def test_high_confidence_exact_and_fuzzy_match(client):
     assert result.artikel.id == gouda.id
 
 
-def test_high_confidence_compound_word_substring(client):
+def test_compound_word_substring_is_medium_not_high(client):
+    """Kompositum-Erkennung (z.B. "Mehl" in "Weizenmehl") hebt einen
+    Treffer nur noch auf "mittel", nicht mehr automatisch auf "hoch" -
+    ein reiner Substring-Treffer kann ein anderes Produkt sein als das
+    gesuchte (z.B. Milch/Hafermilch), daher braucht er eine Nutzer-
+    Bestätigung statt automatischer Verknüpfung."""
     db = _db(client)
     mehl = _mk_artikel(db, "Mehl")
     result = resolve_artikel("Weizenmehl Type 405", db)
-    assert result.confidence == "high"
-    assert result.artikel.id == mehl.id
+    assert result.confidence == "medium"
+    assert any(c.id == mehl.id for c, _ in result.candidates)
 
 
 def test_medium_confidence_returns_candidates(client):
