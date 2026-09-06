@@ -1,6 +1,7 @@
 import os
 from datetime import datetime
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, text, event
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import sessionmaker
 
 from models import Base, Offer, WatchlistItem, OfferSourceConfig
@@ -11,6 +12,18 @@ DB_PATH = os.environ.get("DB_PATH", "/share/essensplaner/essensplaner.db")
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 engine = create_engine(f"sqlite:///{DB_PATH}", connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
+
+@event.listens_for(Engine, "connect")
+def _enable_sqlite_foreign_keys(dbapi_connection, connection_record):
+    """SQLite erzwingt Fremdschlüssel-Constraints nur, wenn PRAGMA
+    foreign_keys=ON pro Verbindung gesetzt wird (kein DB-weites Flag).
+    Muss auf Engine-Klassenebene registriert werden (nicht nur auf der
+    eigenen `engine`-Instanz), damit es auch für die von den Tests
+    monkeypatchten Test-Engines gilt (siehe tests/conftest.py)."""
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA foreign_keys=ON")
+    cursor.close()
 
 _LEGACY_ARTIKEL_TABLES = ["ingredients", "fridge_staples", "watchlist_items", "fridge_items"]
 

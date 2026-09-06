@@ -1,5 +1,5 @@
 import base64
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import anthropic
@@ -65,6 +65,8 @@ IMAGE_EXTENSIONS = {
     "image/heic": ".heic",
     "image/heif": ".heif",
 }
+
+MAX_UPLOAD_SIZE_BYTES = 15 * 1024 * 1024  # 15 MB - großzügig für Handyfotos/Scans, verhindert aber unbegrenzte Uploads
 
 
 @app.on_event("startup")
@@ -409,6 +411,7 @@ def delete_recipe(recipe_id: int, db: Session = Depends(get_db)):
     db_recipe = db.query(Recipe).get(recipe_id)
     if not db_recipe:
         raise HTTPException(404, "Rezept nicht gefunden")
+    db.query(PlanEntry).filter(PlanEntry.recipe_id == recipe_id).delete()
     db.delete(db_recipe)
     db.commit()
     return {"status": "ok"}
@@ -425,11 +428,15 @@ async def upload_recipe_image(recipe_id: int, file: UploadFile = File(...), db: 
     if not ext:
         raise HTTPException(400, "Bitte ein Bild hochladen (JPEG, PNG, WebP, HEIC).")
 
+    contents = await file.read()
+    if len(contents) > MAX_UPLOAD_SIZE_BYTES:
+        raise HTTPException(413, f"Datei zu groß (max. {MAX_UPLOAD_SIZE_BYTES // (1024*1024)} MB).")
+
     for old_file in IMAGES_DIR.glob(f"{recipe_id}.*"):
         old_file.unlink(missing_ok=True)
 
     dest = IMAGES_DIR / f"{recipe_id}{ext}"
-    dest.write_bytes(await file.read())
+    dest.write_bytes(contents)
 
     db_recipe.image_path = f"/recipe-images/{recipe_id}{ext}"
     db.commit()
@@ -677,7 +684,10 @@ async def import_recipe_photo(files: list[UploadFile] = File(...), db: Session =
                 f"Nicht unterstützter Dateityp bei '{file.filename}': {media_type or 'unbekannt'}. "
                 "Erlaubt sind Bilder (JPEG, PNG, WebP, HEIC) und PDF.",
             )
-        data_b64 = base64.standard_b64encode(await file.read()).decode("utf-8")
+        contents = await file.read()
+        if len(contents) > MAX_UPLOAD_SIZE_BYTES:
+            raise HTTPException(413, f"Datei '{file.filename}' zu groß (max. {MAX_UPLOAD_SIZE_BYTES // (1024*1024)} MB).")
+        data_b64 = base64.standard_b64encode(contents).decode("utf-8")
         content_blocks.append({
             "type": block_type,
             "source": {"type": "base64", "media_type": media_type, "data": data_b64},
@@ -720,10 +730,9 @@ async def import_recipe_photo(files: list[UploadFile] = File(...), db: Session =
 # ---------- Wochenplan ----------
 
 @app.post("/api/plan/generate", response_model=list[PlanEntryOut])
-async def generate_plan(start: str, db: Session = Depends(get_db)):
-    start_date = date.fromisoformat(start)
+async def generate_plan(start: date, db: Session = Depends(get_db)):
     try:
-        entries = generate_week_plan(db, start_date)
+        entries = generate_week_plan(db, start)
     except ValueError as e:
         raise HTTPException(400, str(e))
 
@@ -741,11 +750,10 @@ async def generate_plan(start: str, db: Session = Depends(get_db)):
 
 
 @app.get("/api/plan", response_model=list[PlanEntryOut])
-def get_plan(start: str, db: Session = Depends(get_db)):
-    start_date = date.fromisoformat(start)
+def get_plan(start: date, db: Session = Depends(get_db)):
     entries = (
         db.query(PlanEntry)
-        .filter(PlanEntry.date >= start_date)
+        .filter(PlanEntry.date >= start, PlanEntry.date < start + timedelta(days=7))
         .order_by(PlanEntry.date)
         .limit(7)
         .all()
@@ -757,27 +765,28 @@ def get_plan(start: str, db: Session = Depends(get_db)):
 
 
 @app.put("/api/plan/{entry_date}")
-async def swap_day(entry_date: str, recipe_id: int, db: Session = Depends(get_db)):
+async def swap_day(entry_date: date, recipe_id: int, db: Session = Depends(get_db)):
     """Tauscht das Gericht eines einzelnen Tages (z.B. ausgelöst über das HA-Dashboard)."""
-    d = date.fromisoformat(entry_date)
-    entry = db.query(PlanEntry).filter(PlanEntry.date == d).first()
+    entry = db.query(PlanEntry).filter(PlanEntry.date == entry_date).first()
     if not entry:
         raise HTTPException(404, "Kein Plan-Eintrag für dieses Datum")
+    recipe = db.query(Recipe).get(recipe_id)
+    if not recipe:
+        raise HTTPException(404, "Rezept nicht gefunden")
     entry.recipe_id = recipe_id
     db.commit()
     settings = get_settings(db)
-    await ha_client.upsert_calendar_event(settings.calendar_entity, entry_date, entry.recipe.title)
+    await ha_client.upsert_calendar_event(settings.calendar_entity, entry_date.isoformat(), entry.recipe.title)
     return {"status": "ok"}
 
 
 # ---------- Einkaufsliste ----------
 
 @app.post("/api/shopping-list/push")
-async def push_shopping_list(start: str, db: Session = Depends(get_db)):
-    start_date = date.fromisoformat(start)
+async def push_shopping_list(start: date, db: Session = Depends(get_db)):
     entries = (
         db.query(PlanEntry)
-        .filter(PlanEntry.date >= start_date)
+        .filter(PlanEntry.date >= start, PlanEntry.date < start + timedelta(days=7))
         .order_by(PlanEntry.date)
         .limit(7)
         .all()
