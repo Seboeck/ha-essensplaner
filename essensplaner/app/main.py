@@ -218,6 +218,8 @@ def confirm_pending_match(pending_id: int, db: Session = Depends(get_db)):
     pending = db.query(PendingArtikelMatch).get(pending_id)
     if not pending:
         raise HTTPException(404, "Eintrag nicht gefunden")
+    if pending.status != "open":
+        raise HTTPException(409, f"Eintrag ist bereits {pending.status}")
     pending.status = "confirmed"
     db.add(ArtikelPriceHistory(
         artikel_id=pending.artikel_id, price=pending.price, discount_text=pending.discount_text,
@@ -235,6 +237,8 @@ def reject_pending_match(pending_id: int, db: Session = Depends(get_db)):
     pending = db.query(PendingArtikelMatch).get(pending_id)
     if not pending:
         raise HTTPException(404, "Eintrag nicht gefunden")
+    if pending.status != "open":
+        raise HTTPException(409, f"Eintrag ist bereits {pending.status}")
     pending.status = "rejected"
     db.commit()
     db.refresh(pending)
@@ -307,6 +311,13 @@ def merge_artikel(artikel_id: int, other_id: int, db: Session = Depends(get_db))
                 db.delete(other_row)
             else:
                 other_row.artikel_id = artikel_id
+
+    if not target.image_path and other.image_path:
+        target.image_path = other.image_path
+    elif other.image_path:
+        image_file = ARTIKEL_IMAGES_DIR / Path(other.image_path).name
+        if image_file.exists():
+            image_file.unlink()
 
     db.delete(other)
     db.commit()

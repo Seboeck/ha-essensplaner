@@ -49,6 +49,21 @@ def _rename_legacy_artikel_tables_if_needed() -> bool:
             return False
         for table in _LEGACY_ARTIKEL_TABLES:
             conn.execute(text(f"ALTER TABLE {table} RENAME TO {table}_old"))
+            # SQLite hält Index-Namen datenbankweit eindeutig — das Umbenennen
+            # der Tabelle benennt ihre Indexe NICHT mit um. Ohne dieses Drop
+            # würde das nachfolgende create_all() beim Anlegen des Index für
+            # die neue (leere) Tabelle mit "index already exists" abstürzen,
+            # weil der Name noch der _old-Tabelle gehört.
+            # Ergebnisse zuerst vollstaendig materialisieren: ein noch offener
+            # Cursor auf derselben Connection blockiert (zumindest unter
+            # Windows/pysqlite) ein nachfolgendes DROP INDEX mit
+            # "database table is locked".
+            index_rows = list(conn.execute(text(f"PRAGMA index_list({table}_old)")))
+            for row in index_rows:
+                index_name = row[1]
+                if index_name.startswith("sqlite_autoindex_"):
+                    continue
+                conn.execute(text(f"DROP INDEX IF EXISTS {index_name}"))
     return True
 
 

@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from rapidfuzz import fuzz
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from models import Artikel, PendingArtikelMatch
@@ -40,7 +41,7 @@ def resolve_artikel(name: str, db: Session) -> ArtikelMatch:
 
     confirmed = (
         db.query(PendingArtikelMatch)
-        .filter(PendingArtikelMatch.product_name.ilike(normalized), PendingArtikelMatch.status == "confirmed")
+        .filter(func.lower(PendingArtikelMatch.product_name) == normalized, PendingArtikelMatch.status == "confirmed")
         .first()
     )
     if confirmed:
@@ -48,7 +49,7 @@ def resolve_artikel(name: str, db: Session) -> ArtikelMatch:
 
     rejected_artikel_ids = {
         p.artikel_id for p in db.query(PendingArtikelMatch)
-        .filter(PendingArtikelMatch.product_name.ilike(normalized), PendingArtikelMatch.status == "rejected")
+        .filter(func.lower(PendingArtikelMatch.product_name) == normalized, PendingArtikelMatch.status == "rejected")
         .all()
     }
 

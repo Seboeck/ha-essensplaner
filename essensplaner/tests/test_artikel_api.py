@@ -93,3 +93,44 @@ def test_merge_rejects_self_merge(client):
     a = _mk_artikel(db, "Gouda")
     res = client.post(f"/api/artikel/{a.id}/merge/{a.id}")
     assert res.status_code == 400
+
+
+def test_merge_inherits_others_image_when_target_has_none(client, tmp_path, monkeypatch):
+    """target hat kein eigenes Bild -> uebernimmt other.image_path, die Datei
+    bleibt auf der Platte erhalten (wird ja jetzt vom target referenziert)."""
+    import main
+    monkeypatch.setattr(main, "ARTIKEL_IMAGES_DIR", tmp_path)
+
+    db = _db(client)
+    target = _mk_artikel(db, "Target")
+    other = _mk_artikel(db, "Other")
+    other.image_path = "/artikel-images/other.jpg"
+    db.commit()
+    (tmp_path / "other.jpg").write_bytes(b"fake")
+
+    res = client.post(f"/api/artikel/{target.id}/merge/{other.id}")
+    assert res.status_code == 200
+    assert res.json()["image_path"] == "/artikel-images/other.jpg"
+    assert (tmp_path / "other.jpg").exists()  # Datei wird weiterhin vom (uebernommenen) Bild referenziert
+
+
+def test_merge_deletes_orphaned_image_when_target_already_has_own_image(client, tmp_path, monkeypatch):
+    """target hat bereits ein eigenes Bild -> other.image_path wird verworfen,
+    die verwaiste Datei muss von der Platte geloescht werden."""
+    import main
+    monkeypatch.setattr(main, "ARTIKEL_IMAGES_DIR", tmp_path)
+
+    db = _db(client)
+    target = _mk_artikel(db, "Target")
+    target.image_path = "/artikel-images/target.jpg"
+    other = _mk_artikel(db, "Other")
+    other.image_path = "/artikel-images/other.jpg"
+    db.commit()
+    (tmp_path / "target.jpg").write_bytes(b"fake-target")
+    (tmp_path / "other.jpg").write_bytes(b"fake-other")
+
+    res = client.post(f"/api/artikel/{target.id}/merge/{other.id}")
+    assert res.status_code == 200
+    assert res.json()["image_path"] == "/artikel-images/target.jpg"  # eigenes Bild bleibt
+    assert not (tmp_path / "other.jpg").exists()  # verwaiste Datei des zusammengefuehrten Artikels geloescht
+    assert (tmp_path / "target.jpg").exists()  # eigenes Bild bleibt unangetastet

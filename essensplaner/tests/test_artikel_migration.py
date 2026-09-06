@@ -17,6 +17,11 @@ def _create_legacy_db(path: Path):
         CREATE TABLE fridge_items (id INTEGER PRIMARY KEY, name TEXT NOT NULL, amount REAL, unit TEXT);
         CREATE TABLE settings (id INTEGER PRIMARY KEY);
 
+        CREATE INDEX ix_ingredients_id ON ingredients (id);
+        CREATE INDEX ix_fridge_staples_id ON fridge_staples (id);
+        CREATE INDEX ix_watchlist_items_id ON watchlist_items (id);
+        CREATE INDEX ix_fridge_items_id ON fridge_items (id);
+
         INSERT INTO recipes (id, title, base_servings, instructions, is_favorite, source, tags)
             VALUES (1, 'Kaesebrot', 4, '', 0, 'manual', '');
         INSERT INTO ingredients (id, recipe_id, name, amount, unit) VALUES (1, 1, 'Gouda', 200, 'g');
@@ -135,6 +140,44 @@ def test_migration_resumes_after_interruption_between_create_all_and_populate(tm
         assert conn.execute(
             sa_text("SELECT name FROM sqlite_master WHERE type='table' AND name='ingredients_old'")
         ).first() is None
+
+
+def test_migration_does_not_collide_on_legacy_indexes(tmp_path, monkeypatch):
+    """Reproduziert den Index-Namenskollisions-Absturz: SQLite benennt beim
+    Umbenennen einer Tabelle ihre Indexe NICHT mit um. Ohne den Fix schlaegt
+    das anschliessende create_all() mit "index ix_ingredients_id already
+    exists" fehl, weil der Name noch der *_old-Tabelle gehoert."""
+    import database
+
+    db_file = tmp_path / "legacy.db"
+    _create_legacy_db(db_file)
+
+    test_engine = create_engine(f"sqlite:///{db_file}", connect_args={"check_same_thread": False})
+    TestSessionLocal = sessionmaker(bind=test_engine, autoflush=False, autocommit=False)
+    monkeypatch.setattr(database, "engine", test_engine)
+    monkeypatch.setattr(database, "SessionLocal", TestSessionLocal)
+
+    database.init_db()  # darf NICHT mit "index already exists" abstuerzen
+
+    from models import Ingredient
+
+    db = TestSessionLocal()
+    try:
+        assert db.query(Ingredient).count() == 2  # Migration ist trotzdem vollstaendig durchgelaufen
+    finally:
+        db.close()
+
+    # Die Indexe muessen unter denselben Namen wieder existieren (jetzt auf
+    # den neuen, artikel_id-basierten Tabellen).
+    with test_engine.connect() as conn:
+        from sqlalchemy import text as sa_text
+        index_names = {
+            row[0] for row in conn.execute(
+                sa_text("SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'ix_%'")
+            )
+        }
+    for expected in ("ix_ingredients_id", "ix_fridge_staples_id", "ix_watchlist_items_id", "ix_fridge_items_id"):
+        assert expected in index_names
 
 
 def test_migration_is_idempotent_noop_on_fresh_or_already_migrated_db(client):

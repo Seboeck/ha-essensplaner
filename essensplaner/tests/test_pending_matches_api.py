@@ -72,3 +72,29 @@ def test_reject_closes_entry_without_price_history(client):
 
 def test_confirm_unknown_id_returns_404(client):
     assert client.post("/api/artikel/pending-matches/9999/confirm").status_code == 404
+
+
+def test_confirm_twice_returns_409_and_does_not_duplicate_history(client):
+    from models import ArtikelPriceHistory
+    db = _db(client)
+    a = _mk_artikel(db, "Paprika rot")
+    p = _mk_pending(db, a.id)
+
+    res1 = client.post(f"/api/artikel/pending-matches/{p.id}/confirm")
+    assert res1.status_code == 200
+    res2 = client.post(f"/api/artikel/pending-matches/{p.id}/confirm")
+    assert res2.status_code == 409
+
+    db2 = _db(client)
+    history = db2.query(ArtikelPriceHistory).filter(ArtikelPriceHistory.artikel_id == a.id).all()
+    assert len(history) == 1
+
+
+def test_reject_after_confirm_returns_409(client):
+    db = _db(client)
+    a = _mk_artikel(db, "Paprika rot")
+    p = _mk_pending(db, a.id)
+
+    client.post(f"/api/artikel/pending-matches/{p.id}/confirm")
+    res = client.post(f"/api/artikel/pending-matches/{p.id}/reject")
+    assert res.status_code == 409

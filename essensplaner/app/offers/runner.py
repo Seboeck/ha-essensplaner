@@ -5,6 +5,7 @@ import asyncio
 import logging
 from datetime import datetime
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 import ha_client
@@ -42,6 +43,7 @@ def _record_artikel_match(offer_data, source: str, db: Session, now: str) -> Non
 
     if match.confidence == "high":
         artikel = match.artikel
+        db.flush()  # ohne Flush sieht die Duplikat-Prüfung Zeilen nicht, die im selben Lauf schon (aber noch nicht committed) hinzugefügt wurden
         duplicate = (
             db.query(ArtikelPriceHistory)
             .filter(
@@ -69,7 +71,7 @@ def _record_artikel_match(offer_data, source: str, db: Session, now: str) -> Non
             existing = (
                 db.query(PendingArtikelMatch)
                 .filter(
-                    PendingArtikelMatch.product_name.ilike(product_norm),
+                    func.lower(PendingArtikelMatch.product_name) == product_norm,
                     PendingArtikelMatch.artikel_id == artikel.id,
                     PendingArtikelMatch.status == "open",
                 )

@@ -154,6 +154,32 @@ def test_run_source_does_not_duplicate_identical_price_history_entry(client):
     assert len(history) == 1  # identischer Preis/Zeitraum -> kein zweiter Eintrag
 
 
+def test_run_source_dedups_price_history_within_same_run(client):
+    """Zwei Angebote im selben Lauf, die auf denselben Artikel/Preis/Zeitraum
+    matchen (realistisch bei Kaufland: Titel+Untertitel ergeben oft fast
+    identische Produktnamen), duerfen wegen autoflush=False nicht als zwei
+    separate Preis-Historie-Zeilen landen — die Duplikat-Pruefung muss die
+    bereits im selben Lauf (aber noch nicht committete) hinzugefuegte Zeile
+    sehen."""
+    from models import ArtikelPriceHistory
+    db = _db(client)
+    gouda = _mk_artikel(db, "Gouda")
+
+    fake_offers = [
+        OfferData(retailer="kaufland", product_name="Gouda Scheiben 250g",
+                  valid_from=date(2026, 9, 7), valid_until=date(2026, 9, 13), price=1.99),
+        OfferData(retailer="kaufland", product_name="Gouda jung mild 250g",
+                  valid_from=date(2026, 9, 7), valid_until=date(2026, 9, 13), price=1.99),
+    ]
+    with patch("offers.kaufland_scraper.fetch_offers", return_value=fake_offers), \
+         patch("ha_client.notify", new_callable=AsyncMock):
+        run_source("kaufland_scraper", db, plz="12345")
+
+    db2 = _db(client)
+    history = db2.query(ArtikelPriceHistory).filter(ArtikelPriceHistory.artikel_id == gouda.id).all()
+    assert len(history) == 1  # beide Angebote im selben Lauf matchen denselben Artikel -> nur 1 Eintrag
+
+
 def test_run_source_creates_pending_match_for_medium_confidence(client):
     from models import PendingArtikelMatch
     db = _db(client)

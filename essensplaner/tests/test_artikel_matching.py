@@ -77,3 +77,29 @@ def test_confirmed_pairing_returns_high_confidence(client):
     result = resolve_artikel("Paprikapulver edelsüß", db)
     assert result.confidence == "high"
     assert result.artikel.id == a.id
+
+
+def test_resolve_artikel_percent_sign_in_name_does_not_wildcard_match(client):
+    """`%` und `_` sind SQL-LIKE-Wildcards. Ein confirmed PendingArtikelMatch
+    mit einem laengeren product_name, der zufaellig den (normalisierten)
+    Suchbegriff als Teilstring enthaelt, darf NICHT ueber ilike() als
+    exakter Treffer durchgehen, nur weil "%" als Wildcard interpretiert
+    wurde statt als Literalzeichen."""
+    db = _db(client)
+    from datetime import date, datetime
+    unrelated = Artikel(name="Ganz was anderes", created_at=datetime.utcnow().isoformat())
+    db.add(unrelated)
+    db.commit()
+    db.refresh(unrelated)
+    db.add(PendingArtikelMatch(
+        product_name="Milch 3,5% Fett haltbar", artikel_id=unrelated.id, score=65.0, status="confirmed",
+        retailer="kaufland", source="kaufland_scraper", valid_from=date.today(), valid_until=date.today(),
+        created_at=datetime.utcnow().isoformat(),
+    ))
+    db.commit()
+
+    match = resolve_artikel("Milch 3,5%", db)
+    # Ein literales "%" im Suchbegriff darf nicht als Wildcard auf die
+    # confirmed-Paarung mit einem anderen (laengeren) product_name matchen —
+    # dies darf NICHT ueber den confirmed-Fastpath auf "unrelated" aufloesen.
+    assert not (match.confidence == "high" and match.artikel and match.artikel.id == unrelated.id)
