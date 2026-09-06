@@ -3,6 +3,27 @@
 Alle nennenswerten Änderungen an diesem Add-on werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.0] - 2026-09-06
+
+### Hinzugefügt
+
+- Neue Artikeldatenbank: Rezept-Zutaten, Kühlschrank-Bestand/-
+  Standardartikel und Merklisten-Artikel verweisen jetzt auf
+  gemeinsame Artikel mit Bild und Preis-Historie statt auf
+  Freitext-Namen.
+- Artikel-Übersicht im Zutatenliste-Tab: Bild und Preis-Historie pro
+  Artikel.
+- Autocomplete bei der Zutaten-/Kühlschrank-/Merklisten-Erfassung mit
+  automatischer Dublettenerkennung (Fuzzy-Matching in drei
+  Konfidenz-Stufen) und "Neu anlegen"-Option.
+- Angebote werden automatisch mit passenden Artikeln verknüpft
+  (Preis-Historie + Produktbild); mehrdeutige Treffer landen in einer
+  neuen Bestätigungs-Warteschlange im Angebote-Tab.
+- JSON-Import löst importierte Zutatennamen automatisch gegen die
+  Artikeldatenbank auf, mit Rückfrage bei mehrdeutigen Fällen.
+- Automatische, einmalige Migration bestehender Rezepte/Kühlschrank-/
+  Merklisten-Daten beim ersten Start nach dem Update.
+
 ## [0.8.0] - 2026-09-05
 
 ### Hinzugefügt
