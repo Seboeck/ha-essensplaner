@@ -901,6 +901,7 @@
         pendingImportRecipes = null;
         pendingIngredientAmbiguities = [];
         loadRecipes();
+        loadArtikelOverview();
       } catch (e) {
         showImportMsg('Fehler beim Import: ' + e.message, false);
       }
@@ -1126,6 +1127,7 @@
         showPhotoMsg('Rezept gespeichert.', true);
         photoReview.style.display = 'none';
         loadRecipes();
+        loadArtikelOverview();
       } catch (e) {
         showPhotoMsg('Fehler beim Speichern: ' + e.message, false);
       }
@@ -1374,6 +1376,8 @@
         } finally {
           loadOfferSources();
           loadOffers();
+          loadArtikelOverview();
+          loadPendingMatches();
         }
       }
     });
