@@ -56,6 +56,24 @@ im Brief angenommene Struktur war in mehreren Punkten falsch:
   Eintrag) als ISO-Datumszeit mit Uhrzeit/Zeitzone (z.B.
   "2026-09-09T22:00:00Z") statt reinem Datum — nur der Datumsteil wird
   übernommen.
+
+Live-Verifikation am 2026-09-06 (Task 13, Step 3) gegen die echte API für
+das Produktbild. Die im Brief angenommene Struktur (`product.imageUrl`
+oder ein Top-Level-Feld `images`/`imageUrl` mit URL-String) war falsch:
+Weder `product` noch das Angebot selbst enthalten irgendeinen URL-String
+für ein Bild. Stattdessen liefert `offers/search` unter `images` nur
+Metadaten (`{"count": 1, "metadata": [{"aspectRatio": ..., "width": ...,
+"height": ...}]}`) — `count` zeigt an, ob überhaupt ein Bild existiert
+(0 bei allen live getesteten Stichproben nicht beobachtet, aber laut
+Feldname als "kein Bild"-Fall vorgesehen). Die tatsächliche Bild-URL wird
+NICHT von der API geliefert, sondern folgt einem festen, aus der
+öffentlichen marktguru.de-Website (CDN-Links im HTML) rekonstruierten
+Muster, das die Angebots-`id` einbettet:
+`https://cdn.marktguru.de/api/v1/offers/{id}/images/default/0/small.webp`
+(live bestätigt: `id=24670158` -> `200 image/webp`, 4598 Bytes). `small`
+ist eine von mehreren im Website-HTML beobachteten Größenstufen
+(`xsmall`/`small` je nach Kontext); `small` wird hier verwendet, da es der
+im Angebots-Grid der Website genutzten Stufe entspricht.
 """
 import json
 import re
@@ -68,6 +86,11 @@ from offers.base import OfferData
 SOURCE = "marktguru"
 _HOMEPAGE_URL = "https://marktguru.de"
 _SEARCH_URL = "https://api.marktguru.de/api/v1/offers/search"
+# Die API liefert keine Bild-URL als String, sondern nur ein `images`-Feld
+# mit Metadaten (`count`, `metadata`). Die tatsächliche URL folgt diesem
+# aus dem CDN-Linkmuster der Website rekonstruierten Schema (siehe
+# Modul-Docstring, Live-Verifikation Task 13).
+_IMAGE_URL_TEMPLATE = "https://cdn.marktguru.de/api/v1/offers/{offer_id}/images/default/0/small.webp"
 _CONFIG_SCRIPT_RE = re.compile(
     r'<script\s+type="application/json">(.*?)</script>',
     re.IGNORECASE | re.DOTALL,
@@ -149,6 +172,14 @@ def _parse_response(payload: dict) -> list[OfferData]:
         product = raw.get("product") or {}
         product_name = (product.get("name") or raw.get("description") or "").strip()
 
+        images = raw.get("images") or {}
+        offer_id = raw.get("id")
+        image_url = (
+            _IMAGE_URL_TEMPLATE.format(offer_id=offer_id)
+            if images.get("count") and offer_id is not None
+            else None
+        )
+
         offers.append(OfferData(
             retailer=retailer,
             product_name=product_name,
@@ -156,6 +187,7 @@ def _parse_response(payload: dict) -> list[OfferData]:
             discount_text=_compute_discount_text(raw.get("price"), raw.get("oldPrice")),
             valid_from=valid_from,
             valid_until=valid_until,
+            image_url=image_url,
         ))
     return offers
 
