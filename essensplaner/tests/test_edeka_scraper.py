@@ -42,6 +42,11 @@ def test_parse_offers_html_extracts_all_items():
     assert offers[1].valid_until == date(2026, 9, 13)
 
 
+def test_parse_offers_html_extracts_image_url():
+    offers = _parse_offers_html(FIXTURE)
+    assert offers[0].image_url == "https://www.edeka.de/media/example/tomaten.jpg"
+
+
 def test_parse_offers_html_prefers_regular_price_over_app_price():
     # Kachel 2 hat zwei Preis-Einträge (App-Preis 1.29€, regulärer Preis
     # 1.99€ mit -25%) - der App-exklusive Preis darf nicht übernommen werden.

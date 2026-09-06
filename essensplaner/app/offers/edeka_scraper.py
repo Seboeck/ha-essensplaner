@@ -42,6 +42,15 @@ verifiziert (Task 7, Step 5). Wichtige Erkenntnisse aus der Live-Prüfung:
   regulärer/rabattierter Preis danach) - es wird bewusst der letzte
   Preis-Eintrag verwendet, um den App-exklusiven Preis nicht als
   regulären Angebotspreis zu übernehmen.
+
+Am 2026-09-06 zusätzlich live verifiziert (Task 12, Filiale 402574,
+PLZ 10115): jedes Angebots-`<article>` enthält genau ein `<img>`
+(Stichprobe über mehrere Artikel bestätigt keine Icons/Badges als
+zusätzliche `<img>`-Treffer). Trotz `loading="lazy"` liegt die finale
+Bild-URL direkt in `src` (z.B.
+`https://offer-images.api.edeka/<uuid>_<name>.png`) - kein
+`data-src`/`srcset`-Deferral nötig, ein einfaches `item.select_one("img")`
+reicht aus.
 """
 import re
 from datetime import date
@@ -147,6 +156,8 @@ def _parse_offers_html(html: str) -> list[OfferData]:
             valid_from = override
 
         description_el = item.select_one("p")
+        image_el = item.select_one("img")
+        image_url = image_el.get("src") if image_el else None
         price_lis = item.select("ul li")
         price, discount_text = _extract_price(price_lis[-1]) if price_lis else (None, None)
 
@@ -158,6 +169,7 @@ def _parse_offers_html(html: str) -> list[OfferData]:
             discount_text=discount_text,
             valid_from=valid_from,
             valid_until=valid_until,
+            image_url=image_url,
         ))
     return offers
 
