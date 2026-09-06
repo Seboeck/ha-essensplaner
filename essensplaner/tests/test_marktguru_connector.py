@@ -63,6 +63,21 @@ def test_parse_response_parses_price_and_discount():
     assert butter.valid_until == date(2026, 9, 12)
 
 
+def test_parse_response_extracts_image_url():
+    offers = _parse_response(FIXTURE)
+    butter = next(o for o in offers if o.product_name == "Butter 250g")
+    # Die API liefert keine Bild-URL als String, sondern nur
+    # `images.count` (siehe Modul-Docstring, Live-Verifikation Task 13).
+    # Die tatsächliche URL wird aus dem CDN-Muster + Angebots-id gebaut.
+    assert butter.image_url == "https://cdn.marktguru.de/api/v1/offers/24670001/images/default/0/small.webp"
+
+
+def test_parse_response_image_url_none_when_images_count_zero():
+    offers = _parse_response(FIXTURE)
+    kaffee = next(o for o in offers if o.product_name == "Kaffee gemahlen 500g")
+    assert kaffee.image_url is None
+
+
 def test_parse_response_skips_offers_without_validity_dates():
     offers = _parse_response(FIXTURE)
     assert all(o.product_name != "Ohne Datum" for o in offers)

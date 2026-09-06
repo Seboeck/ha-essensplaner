@@ -20,6 +20,16 @@ Step 6). Wichtige Erkenntnisse aus der Live-Prüfung:
 - Preise nutzen bereits einen Punkt als Dezimaltrennzeichen und kein "€"-
   Zeichen (z.B. "0.39"), `_parse_price` bleibt trotzdem tolerant gegenüber
   dem Komma-Format, falls sich das wieder ändert.
+
+Ergänzende Live-Prüfung am 2026-09-06 (Task 11) für die Bild-Extraktion:
+- `.k-product-tile__image` ist auf der echten Seite ein umschließendes
+  `<div>`, NICHT das `<img>`-Element selbst. Das tatsächliche `<img>` trägt
+  zusätzlich die Klasse `.k-product-tile__main-image` — diese wird als
+  Selektor verwendet.
+- Das Bild nutzt `loading="lazy"` sowie ein `srcset`, aber `src` enthält
+  bereits die echte Bild-URL (kein Platzhalter/`data-src`) — vermutlich da
+  die Seite serverseitig gerendert ist (siehe oben) und natives
+  Browser-Lazy-Loading statt einer JS-Bibliothek genutzt wird.
 """
 import re
 from datetime import date
@@ -106,6 +116,8 @@ def _parse_offers_html(html: str, today: date | None = None) -> list[OfferData]:
             if not title_el:
                 continue
             subtitle_el = tile.select_one(".k-product-tile__subtitle")
+            image_el = tile.select_one(".k-product-tile__main-image")
+            image_url = image_el.get("src") if image_el else None
             title = title_el.get_text(strip=True)
             subtitle = subtitle_el.get_text(strip=True) if subtitle_el else ""
             product_name = f"{title} {subtitle}".strip()
@@ -120,6 +132,7 @@ def _parse_offers_html(html: str, today: date | None = None) -> list[OfferData]:
                 discount_text=discount_el.get_text(strip=True) if discount_el else None,
                 valid_from=valid_from,
                 valid_until=valid_until,
+                image_url=image_url,
             ))
     return offers
 

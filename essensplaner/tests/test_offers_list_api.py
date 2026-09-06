@@ -1,6 +1,20 @@
+from datetime import date, datetime, timedelta
 from unittest.mock import patch
-from datetime import date, timedelta
 from offers.base import OfferData
+
+
+def _db(client):
+    import database
+    return database.SessionLocal()
+
+
+def _mk_artikel(db, name):
+    from models import Artikel
+    a = Artikel(name=name, created_at=datetime.utcnow().isoformat())
+    db.add(a)
+    db.commit()
+    db.refresh(a)
+    return a
 
 
 def test_list_offers_empty_by_default(client):
@@ -11,11 +25,17 @@ def test_list_offers_empty_by_default(client):
 
 def test_list_offers_sorts_watchlist_matches_first(client):
     client.post("/api/settings", json={"calendar_entity": "calendar.essensplan", "todo_entity": "todo.einkaufen", "plz": "12345"})
-    client.post("/api/watchlist", json={"name": "Mehl"})
+    db = _db(client)
+    mehl = _mk_artikel(db, "Mehl")
+    client.post("/api/watchlist", json={"artikel_id": mehl.id})
 
     fake_offers = [
         OfferData(retailer="kaufland", product_name="Klopapier 8er", valid_from=date.today(), valid_until=date.today() + timedelta(days=5)),
-        OfferData(retailer="kaufland", product_name="Weizenmehl 1kg", valid_from=date.today(), valid_until=date.today() + timedelta(days=2)),
+        # "Mehl 1kg" statt eines reinen Kompositum-Substring-Falls (z.B. "Weizenmehl"):
+        # Substring-Treffer gelten seit dem PR-Review nur noch als "mittel" (siehe
+        # test_artikel_matching.py::test_compound_word_substring_is_medium_not_high),
+        # ein exakter Wort-Treffer wie hier bleibt weiterhin "hoch".
+        OfferData(retailer="kaufland", product_name="Mehl 1kg", valid_from=date.today(), valid_until=date.today() + timedelta(days=2)),
     ]
     with patch("offers.kaufland_scraper.fetch_offers", return_value=fake_offers):
         client.post("/api/offers/refresh/kaufland_scraper")
@@ -24,7 +44,7 @@ def test_list_offers_sorts_watchlist_matches_first(client):
     assert res.status_code == 200
     body = res.json()
     assert len(body) == 2
-    assert body[0]["product_name"] == "Weizenmehl 1kg"
+    assert body[0]["product_name"] == "Mehl 1kg"
     assert body[0]["matched_watchlist"] is True
     assert body[1]["matched_watchlist"] is False
 

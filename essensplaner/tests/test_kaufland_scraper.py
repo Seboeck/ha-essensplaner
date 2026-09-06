@@ -24,6 +24,11 @@ def test_parse_offers_html_extracts_all_tiles():
     assert offers[1].price == 0.99
 
 
+def test_parse_offers_html_extracts_image_url():
+    offers = _parse_offers_html(FIXTURE, today=TODAY)
+    assert offers[0].image_url == "https://kaufland.media.schwarz/is/image/schwarz/example-gouda_DE_P-1"
+
+
 def test_parse_offers_html_skips_sections_without_valid_dates():
     html = """
     <div class="k-product-section">

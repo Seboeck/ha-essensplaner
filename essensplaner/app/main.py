@@ -1,29 +1,36 @@
 import base64
-from datetime import date
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import anthropic
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 import database
 from database import init_db, get_db
 from models import (
     Recipe, Ingredient, PlanEntry, Settings, FridgeItem, FridgeStaple,
-    WatchlistItem, OfferSourceConfig, Offer,
+    WatchlistItem, OfferSourceConfig, Offer, Artikel, ArtikelPriceHistory,
+    PendingArtikelMatch,
 )
 from schemas import (
     RecipeIn,
     RecipeOut,
+    IngredientOut,
     PlanEntryOut,
     SettingsIn,
     SettingsOut,
     RecipeExportFile,
+    ImportRecipeIn,
+    ImportIngredientIn,
     ImportPreviewOut,
     ImportConflict,
+    IngredientAmbiguity,
     ImportApplyIn,
     ImportApplyOut,
+    IngredientResolution,
     FridgeItemIn,
     FridgeItemOut,
     FridgeStapleIn,
@@ -32,12 +39,19 @@ from schemas import (
     OfferSourceConfigOut,
     OfferSourceConfigUpdateIn,
     OfferOut,
+    ArtikelIn,
+    ArtikelOut,
+    ArtikelSuggestOut,
+    ArtikelPriceHistoryOut,
+    PendingArtikelMatchOut,
 )
 import ha_client
 from planner import generate_week_plan, aggregate_shopping_list
 from offers.runner import run_source, get_or_create_source_config, CONNECTORS
 from offers.scheduler import start_scheduler
 from offers.matching import find_matching_recipe_ids, is_watchlist_match
+from artikel_matching import resolve_artikel
+from artikel_images import ARTIKEL_IMAGES_DIR
 
 app = FastAPI(title="Essensplaner")
 
@@ -51,6 +65,8 @@ IMAGE_EXTENSIONS = {
     "image/heic": ".heic",
     "image/heif": ".heif",
 }
+
+MAX_UPLOAD_SIZE_BYTES = 15 * 1024 * 1024  # 15 MB - großzügig für Handyfotos/Scans, verhindert aber unbegrenzte Uploads
 
 
 @app.on_event("startup")
@@ -134,15 +150,226 @@ async def save_settings(payload: SettingsIn, db: Session = Depends(get_db)):
     )
 
 
+# ---------- Artikel ----------
+
+def _artikel_out(artikel: Artikel, db: Session) -> ArtikelOut:
+    last = (
+        db.query(ArtikelPriceHistory)
+        .filter(ArtikelPriceHistory.artikel_id == artikel.id)
+        .order_by(ArtikelPriceHistory.recorded_at.desc())
+        .first()
+    )
+    return ArtikelOut(
+        id=artikel.id,
+        name=artikel.name,
+        image_path=artikel.image_path,
+        last_price=last.price if last else None,
+        last_discount_text=last.discount_text if last else None,
+    )
+
+
+@app.get("/api/artikel", response_model=list[ArtikelOut])
+def list_artikel(db: Session = Depends(get_db)):
+    artikel = db.query(Artikel).order_by(Artikel.name).all()
+    return [_artikel_out(a, db) for a in artikel]
+
+
+@app.get("/api/artikel/suggest", response_model=list[ArtikelSuggestOut])
+def suggest_artikel(q: str, db: Session = Depends(get_db)):
+    # Muss vor "/api/artikel/{artikel_id}" registriert sein, sonst versucht
+    # FastAPI "suggest" als int-Pfadparameter zu parsen (422) statt hierher
+    # zu routen.
+    if not q.strip():
+        return []
+    match = resolve_artikel(q, db)
+    if match.confidence == "high":
+        return [ArtikelSuggestOut(id=match.artikel.id, name=match.artikel.name, confidence="high")]
+    if match.confidence == "medium":
+        return [
+            ArtikelSuggestOut(id=a.id, name=a.name, confidence="medium")
+            for a, _ in match.candidates
+        ]
+    return []
+
+
+# ---------- Bestätigungs-Warteschlange (unsichere Angebots-Zuordnungen) ----------
+# Muss vor "/api/artikel/{artikel_id}" registriert sein, sonst versucht
+# FastAPI "pending-matches" als int-Pfadparameter zu parsen (422) statt
+# hierher zu routen (siehe Kommentar bei suggest_artikel oben).
+
+def _pending_match_out(p: PendingArtikelMatch) -> PendingArtikelMatchOut:
+    return PendingArtikelMatchOut(
+        id=p.id, product_name=p.product_name, artikel_id=p.artikel_id, artikel_name=p.artikel.name,
+        score=p.score, retailer=p.retailer, source=p.source,
+        valid_from=p.valid_from.isoformat(), valid_until=p.valid_until.isoformat(),
+    )
+
+
+@app.get("/api/artikel/pending-matches", response_model=list[PendingArtikelMatchOut])
+def list_pending_matches(db: Session = Depends(get_db)):
+    pending = (
+        db.query(PendingArtikelMatch)
+        .filter(PendingArtikelMatch.status == "open")
+        .order_by(PendingArtikelMatch.score.desc())
+        .all()
+    )
+    return [_pending_match_out(p) for p in pending]
+
+
+@app.post("/api/artikel/pending-matches/{pending_id}/confirm", response_model=PendingArtikelMatchOut)
+def confirm_pending_match(pending_id: int, db: Session = Depends(get_db)):
+    pending = db.query(PendingArtikelMatch).get(pending_id)
+    if not pending:
+        raise HTTPException(404, "Eintrag nicht gefunden")
+    if pending.status != "open":
+        raise HTTPException(409, f"Eintrag ist bereits {pending.status}")
+    pending.status = "confirmed"
+
+    # Andere offene Kandidaten für denselben Produktnamen automatisch ablehnen,
+    # damit resolve_artikel() nicht mehrdeutig wird (siehe PR-Review-Befund).
+    db.query(PendingArtikelMatch).filter(
+        func.lower(PendingArtikelMatch.product_name) == pending.product_name.strip().lower(),
+        PendingArtikelMatch.id != pending.id,
+        PendingArtikelMatch.status == "open",
+    ).update({"status": "rejected"})
+
+    db.add(ArtikelPriceHistory(
+        artikel_id=pending.artikel_id, price=pending.price, discount_text=pending.discount_text,
+        retailer=pending.retailer, source=pending.source,
+        valid_from=pending.valid_from, valid_until=pending.valid_until,
+        recorded_at=datetime.utcnow().isoformat(),
+    ))
+    db.commit()
+    db.refresh(pending)
+    return _pending_match_out(pending)
+
+
+@app.post("/api/artikel/pending-matches/{pending_id}/reject", response_model=PendingArtikelMatchOut)
+def reject_pending_match(pending_id: int, db: Session = Depends(get_db)):
+    pending = db.query(PendingArtikelMatch).get(pending_id)
+    if not pending:
+        raise HTTPException(404, "Eintrag nicht gefunden")
+    if pending.status != "open":
+        raise HTTPException(409, f"Eintrag ist bereits {pending.status}")
+    pending.status = "rejected"
+    db.commit()
+    db.refresh(pending)
+    return _pending_match_out(pending)
+
+
+@app.get("/api/artikel/{artikel_id}", response_model=ArtikelOut)
+def get_artikel(artikel_id: int, db: Session = Depends(get_db)):
+    artikel = db.query(Artikel).get(artikel_id)
+    if not artikel:
+        raise HTTPException(404, "Artikel nicht gefunden")
+    return _artikel_out(artikel, db)
+
+
+@app.get("/api/artikel/{artikel_id}/history", response_model=list[ArtikelPriceHistoryOut])
+def get_artikel_history(artikel_id: int, db: Session = Depends(get_db)):
+    artikel = db.query(Artikel).get(artikel_id)
+    if not artikel:
+        raise HTTPException(404, "Artikel nicht gefunden")
+    entries = (
+        db.query(ArtikelPriceHistory)
+        .filter(ArtikelPriceHistory.artikel_id == artikel_id)
+        .order_by(ArtikelPriceHistory.recorded_at.desc())
+        .all()
+    )
+    return [
+        ArtikelPriceHistoryOut(
+            price=e.price, discount_text=e.discount_text, retailer=e.retailer, source=e.source,
+            valid_from=e.valid_from.isoformat(), valid_until=e.valid_until.isoformat(),
+            recorded_at=e.recorded_at,
+        ) for e in entries
+    ]
+
+
+@app.post("/api/artikel", response_model=ArtikelOut)
+def create_artikel(payload: ArtikelIn, db: Session = Depends(get_db)):
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(400, "Name darf nicht leer sein.")
+    artikel = Artikel(name=name, created_at=datetime.utcnow().isoformat())
+    db.add(artikel)
+    db.commit()
+    db.refresh(artikel)
+    return _artikel_out(artikel, db)
+
+
+@app.post("/api/artikel/{artikel_id}/merge/{other_id}", response_model=ArtikelOut)
+def merge_artikel(artikel_id: int, other_id: int, db: Session = Depends(get_db)):
+    """Führt den Artikel `other_id` in `artikel_id` zusammen: alle
+    verweisenden Zeilen werden umgehängt, `other_id` wird gelöscht. Bei
+    FridgeStaple/WatchlistItem (unique je Artikel) wird die Zeile des zu
+    löschenden Artikels verworfen, falls der Ziel-Artikel bereits eine
+    eigene hat, statt eine Unique-Constraint-Verletzung zu riskieren."""
+    if artikel_id == other_id:
+        raise HTTPException(400, "Kann einen Artikel nicht mit sich selbst zusammenführen.")
+    target = db.query(Artikel).get(artikel_id)
+    other = db.query(Artikel).get(other_id)
+    if not target or not other:
+        raise HTTPException(404, "Artikel nicht gefunden")
+
+    db.query(Ingredient).filter(Ingredient.artikel_id == other_id).update({"artikel_id": artikel_id})
+    db.query(FridgeItem).filter(FridgeItem.artikel_id == other_id).update({"artikel_id": artikel_id})
+    db.query(ArtikelPriceHistory).filter(ArtikelPriceHistory.artikel_id == other_id).update({"artikel_id": artikel_id})
+    db.query(PendingArtikelMatch).filter(PendingArtikelMatch.artikel_id == other_id).update({"artikel_id": artikel_id})
+
+    for model in (FridgeStaple, WatchlistItem):
+        other_row = db.query(model).filter(model.artikel_id == other_id).first()
+        if other_row:
+            if db.query(model).filter(model.artikel_id == artikel_id).first():
+                db.delete(other_row)
+            else:
+                other_row.artikel_id = artikel_id
+
+    if not target.image_path and other.image_path:
+        target.image_path = other.image_path
+    elif other.image_path:
+        image_file = ARTIKEL_IMAGES_DIR / Path(other.image_path).name
+        if image_file.exists():
+            image_file.unlink()
+
+    db.delete(other)
+    db.commit()
+    db.refresh(target)
+    return _artikel_out(target, db)
+
+
 # ---------- Rezepte ----------
+
+def _recipe_out(recipe: Recipe) -> RecipeOut:
+    return RecipeOut(
+        id=recipe.id,
+        title=recipe.title,
+        base_servings=recipe.base_servings,
+        instructions=recipe.instructions,
+        is_favorite=recipe.is_favorite,
+        tags=recipe.tags,
+        image_path=recipe.image_path,
+        source=recipe.source,
+        ingredients=[
+            IngredientOut(artikel_id=i.artikel_id, name=i.artikel.name, amount=i.amount, unit=i.unit)
+            for i in recipe.ingredients
+        ],
+    )
+
+
+def _require_artikel(artikel_id: int, db: Session) -> None:
+    if not db.query(Artikel).get(artikel_id):
+        raise HTTPException(400, f"Artikel {artikel_id} nicht gefunden")
+
 
 @app.get("/api/recipes", response_model=list[RecipeOut])
 def list_recipes(db: Session = Depends(get_db)):
-    return db.query(Recipe).all()
+    return [_recipe_out(r) for r in db.query(Recipe).all()]
 
 
 @app.post("/api/recipes", response_model=RecipeOut)
 def create_recipe(recipe: RecipeIn, db: Session = Depends(get_db)):
+    for i in recipe.ingredients:
+        _require_artikel(i.artikel_id, db)
     db_recipe = Recipe(
         title=recipe.title,
         base_servings=recipe.base_servings,
@@ -151,12 +378,12 @@ def create_recipe(recipe: RecipeIn, db: Session = Depends(get_db)):
         tags=recipe.tags,
     )
     db_recipe.ingredients = [
-        Ingredient(name=i.name, amount=i.amount, unit=i.unit) for i in recipe.ingredients
+        Ingredient(artikel_id=i.artikel_id, amount=i.amount, unit=i.unit) for i in recipe.ingredients
     ]
     db.add(db_recipe)
     db.commit()
     db.refresh(db_recipe)
-    return db_recipe
+    return _recipe_out(db_recipe)
 
 
 @app.put("/api/recipes/{recipe_id}", response_model=RecipeOut)
@@ -164,17 +391,19 @@ def update_recipe(recipe_id: int, recipe: RecipeIn, db: Session = Depends(get_db
     db_recipe = db.query(Recipe).get(recipe_id)
     if not db_recipe:
         raise HTTPException(404, "Rezept nicht gefunden")
+    for i in recipe.ingredients:
+        _require_artikel(i.artikel_id, db)
     db_recipe.title = recipe.title
     db_recipe.base_servings = recipe.base_servings
     db_recipe.instructions = recipe.instructions
     db_recipe.is_favorite = recipe.is_favorite
     db_recipe.tags = recipe.tags
     db_recipe.ingredients = [
-        Ingredient(name=i.name, amount=i.amount, unit=i.unit) for i in recipe.ingredients
+        Ingredient(artikel_id=i.artikel_id, amount=i.amount, unit=i.unit) for i in recipe.ingredients
     ]
     db.commit()
     db.refresh(db_recipe)
-    return db_recipe
+    return _recipe_out(db_recipe)
 
 
 @app.delete("/api/recipes/{recipe_id}")
@@ -182,6 +411,7 @@ def delete_recipe(recipe_id: int, db: Session = Depends(get_db)):
     db_recipe = db.query(Recipe).get(recipe_id)
     if not db_recipe:
         raise HTTPException(404, "Rezept nicht gefunden")
+    db.query(PlanEntry).filter(PlanEntry.recipe_id == recipe_id).delete()
     db.delete(db_recipe)
     db.commit()
     return {"status": "ok"}
@@ -198,16 +428,20 @@ async def upload_recipe_image(recipe_id: int, file: UploadFile = File(...), db: 
     if not ext:
         raise HTTPException(400, "Bitte ein Bild hochladen (JPEG, PNG, WebP, HEIC).")
 
+    contents = await file.read()
+    if len(contents) > MAX_UPLOAD_SIZE_BYTES:
+        raise HTTPException(413, f"Datei zu groß (max. {MAX_UPLOAD_SIZE_BYTES // (1024*1024)} MB).")
+
     for old_file in IMAGES_DIR.glob(f"{recipe_id}.*"):
         old_file.unlink(missing_ok=True)
 
     dest = IMAGES_DIR / f"{recipe_id}{ext}"
-    dest.write_bytes(await file.read())
+    dest.write_bytes(contents)
 
     db_recipe.image_path = f"/recipe-images/{recipe_id}{ext}"
     db.commit()
     db.refresh(db_recipe)
-    return db_recipe
+    return _recipe_out(db_recipe)
 
 
 # ---------- Export / Import ----------
@@ -224,7 +458,7 @@ def _recipe_to_export(recipe: Recipe) -> dict:
         "is_favorite": recipe.is_favorite,
         "tags": recipe.tags,
         "ingredients": [
-            {"name": i.name, "amount": i.amount, "unit": i.unit} for i in recipe.ingredients
+            {"name": i.artikel.name, "amount": i.amount, "unit": i.unit} for i in recipe.ingredients
         ],
     }
 
@@ -245,15 +479,30 @@ def export_one_recipe(recipe_id: int, db: Session = Depends(get_db)):
     return {"recipes": [_recipe_to_export(recipe)]}
 
 
+def _auto_resolve_artikel_id(name: str, db: Session) -> int:
+    """Automatische Auflösung für Import-Pfade: hohe Konfidenz -> bestehender
+    Artikel, sonst neuer Artikel (kein stilles Raten zwischen mehreren
+    mittel-konfidenten Kandidaten — die werden im Preview gemeldet)."""
+    match = resolve_artikel(name, db)
+    if match.confidence == "high":
+        return match.artikel.id
+    artikel = Artikel(name=name.strip(), created_at=datetime.utcnow().isoformat())
+    db.add(artikel)
+    db.flush()
+    return artikel.id
+
+
 @app.post("/api/recipes/import/preview", response_model=ImportPreviewOut)
 def preview_import(payload: RecipeExportFile, db: Session = Depends(get_db)):
     """
     Prüft die zu importierenden Rezepte auf Titel-Duplikate mit bestehenden
-    Rezepten, ohne die DB zu verändern. Der Client löst die Konflikte auf
-    (alt behalten oder neu übernehmen) und ruft danach /import/apply auf.
+    Rezepten UND auf Zutaten, die nur mit mittlerer Konfidenz zu einem
+    bestehenden Artikel passen (Ambiguität), ohne die DB zu verändern.
     """
     existing_by_title = {_normalize_title(r.title): r for r in db.query(Recipe).all()}
     conflicts: list[ImportConflict] = []
+    ingredient_ambiguities: list[IngredientAmbiguity] = []
+
     for idx, recipe in enumerate(payload.recipes):
         match = existing_by_title.get(_normalize_title(recipe.title))
         if match:
@@ -265,10 +514,24 @@ def preview_import(payload: RecipeExportFile, db: Session = Depends(get_db)):
                     existing_title=match.title,
                 )
             )
+        for ing_idx, ing in enumerate(recipe.ingredients):
+            result = resolve_artikel(ing.name, db)
+            if result.confidence == "medium":
+                ingredient_ambiguities.append(IngredientAmbiguity(
+                    recipe_index=idx,
+                    ingredient_index=ing_idx,
+                    ingredient_name=ing.name,
+                    candidates=[
+                        ArtikelSuggestOut(id=a.id, name=a.name, confidence="medium")
+                        for a, _ in result.candidates
+                    ],
+                ))
+
     return ImportPreviewOut(
         total=len(payload.recipes),
         new_count=len(payload.recipes) - len(conflicts),
         conflicts=conflicts,
+        ingredient_ambiguities=ingredient_ambiguities,
     )
 
 
@@ -276,32 +539,48 @@ def preview_import(payload: RecipeExportFile, db: Session = Depends(get_db)):
 def apply_import(payload: ImportApplyIn, db: Session = Depends(get_db)):
     """
     Führt den Import durch: neue Rezepte (kein Titel-Duplikat) werden immer
-    angelegt. Für Duplikate entscheidet 'resolutions' pro Index:
-    action="neu" überschreibt das bestehende Rezept mit den Importdaten,
-    action="alt" (oder keine Angabe) behält das bestehende Rezept unverändert.
+    angelegt. Für Duplikate entscheidet 'resolutions' pro Index. Zutaten
+    werden per artikel_id aufgelöst: explizite 'ingredient_resolutions'
+    haben Vorrang, sonst automatische Auflösung (siehe _auto_resolve_artikel_id).
+    Übersprungene Rezepte (Aktion 'alt') lösen keine Zutaten auf und legen
+    keine neuen Artikel an.
     """
     existing_by_title = {_normalize_title(r.title): r for r in db.query(Recipe).all()}
     resolution_by_index = {res.import_index: res.action for res in payload.resolutions}
+    ingredient_resolution_by_key = {
+        (r.recipe_index, r.ingredient_index): r.artikel_id for r in payload.ingredient_resolutions
+    }
+
+    explicit_artikel_ids = set(ingredient_resolution_by_key.values())
+    if explicit_artikel_ids:
+        known_ids = {a.id for a in db.query(Artikel.id).filter(Artikel.id.in_(explicit_artikel_ids)).all()}
+        unknown_ids = explicit_artikel_ids - known_ids
+        if unknown_ids:
+            raise HTTPException(400, f"Unbekannte Artikel-ID(s): {sorted(unknown_ids)}")
 
     imported = overwritten = skipped = 0
 
     for idx, recipe in enumerate(payload.recipes):
         match = existing_by_title.get(_normalize_title(recipe.title))
+        if match and resolution_by_index.get(idx, "alt") != "neu":
+            skipped += 1
+            continue
+
+        ingredient_models = []
+        for ing_idx, ing in enumerate(recipe.ingredients):
+            artikel_id = ingredient_resolution_by_key.get((idx, ing_idx))
+            if artikel_id is None:
+                artikel_id = _auto_resolve_artikel_id(ing.name, db)
+            ingredient_models.append(Ingredient(artikel_id=artikel_id, amount=ing.amount, unit=ing.unit))
+
         if match:
-            action = resolution_by_index.get(idx, "alt")
-            if action == "neu":
-                match.title = recipe.title
-                match.base_servings = recipe.base_servings
-                match.instructions = recipe.instructions
-                match.is_favorite = recipe.is_favorite
-                match.tags = recipe.tags
-                match.ingredients = [
-                    Ingredient(name=i.name, amount=i.amount, unit=i.unit)
-                    for i in recipe.ingredients
-                ]
-                overwritten += 1
-            else:
-                skipped += 1
+            match.title = recipe.title
+            match.base_servings = recipe.base_servings
+            match.instructions = recipe.instructions
+            match.is_favorite = recipe.is_favorite
+            match.tags = recipe.tags
+            match.ingredients = ingredient_models
+            overwritten += 1
         else:
             db_recipe = Recipe(
                 title=recipe.title,
@@ -310,9 +589,7 @@ def apply_import(payload: ImportApplyIn, db: Session = Depends(get_db)):
                 is_favorite=recipe.is_favorite,
                 tags=recipe.tags,
             )
-            db_recipe.ingredients = [
-                Ingredient(name=i.name, amount=i.amount, unit=i.unit) for i in recipe.ingredients
-            ]
+            db_recipe.ingredients = ingredient_models
             db.add(db_recipe)
             imported += 1
 
@@ -383,7 +660,7 @@ IMPORT_MEDIA_TYPES = {
 }
 
 
-@app.post("/api/recipes/import-photo", response_model=RecipeIn)
+@app.post("/api/recipes/import-photo", response_model=ImportRecipeIn)
 async def import_recipe_photo(files: list[UploadFile] = File(...), db: Session = Depends(get_db)):
     """
     Nimmt ein oder mehrere Fotos/PDFs einer Rezeptkarte oder eines handschriftlichen Rezepts
@@ -407,7 +684,10 @@ async def import_recipe_photo(files: list[UploadFile] = File(...), db: Session =
                 f"Nicht unterstützter Dateityp bei '{file.filename}': {media_type or 'unbekannt'}. "
                 "Erlaubt sind Bilder (JPEG, PNG, WebP, HEIC) und PDF.",
             )
-        data_b64 = base64.standard_b64encode(await file.read()).decode("utf-8")
+        contents = await file.read()
+        if len(contents) > MAX_UPLOAD_SIZE_BYTES:
+            raise HTTPException(413, f"Datei '{file.filename}' zu groß (max. {MAX_UPLOAD_SIZE_BYTES // (1024*1024)} MB).")
+        data_b64 = base64.standard_b64encode(contents).decode("utf-8")
         content_blocks.append({
             "type": block_type,
             "source": {"type": "base64", "media_type": media_type, "data": data_b64},
@@ -442,7 +722,7 @@ async def import_recipe_photo(files: list[UploadFile] = File(...), db: Session =
         raise HTTPException(502, "Konnte keine Rezeptdaten aus dem Foto erkennen.")
 
     try:
-        return RecipeIn(**tool_use.input)
+        return ImportRecipeIn(**tool_use.input)
     except Exception:
         raise HTTPException(502, "Erkannte Daten hatten ein unerwartetes Format.")
 
@@ -450,18 +730,18 @@ async def import_recipe_photo(files: list[UploadFile] = File(...), db: Session =
 # ---------- Wochenplan ----------
 
 @app.post("/api/plan/generate", response_model=list[PlanEntryOut])
-async def generate_plan(start: str, db: Session = Depends(get_db)):
-    start_date = date.fromisoformat(start)
+async def generate_plan(start: date, db: Session = Depends(get_db)):
     try:
-        entries = generate_week_plan(db, start_date)
+        entries = generate_week_plan(db, start)
     except ValueError as e:
         raise HTTPException(400, str(e))
 
     # in Home-Assistant-Kalender schreiben
     settings = get_settings(db)
+    known_titles = {r[0] for r in db.query(Recipe.title).all()}
     for entry in entries:
         await ha_client.upsert_calendar_event(
-            settings.calendar_entity, entry.date.isoformat(), entry.recipe.title
+            settings.calendar_entity, entry.date.isoformat(), entry.recipe.title, known_titles=known_titles
         )
 
     return [
@@ -471,11 +751,10 @@ async def generate_plan(start: str, db: Session = Depends(get_db)):
 
 
 @app.get("/api/plan", response_model=list[PlanEntryOut])
-def get_plan(start: str, db: Session = Depends(get_db)):
-    start_date = date.fromisoformat(start)
+def get_plan(start: date, db: Session = Depends(get_db)):
     entries = (
         db.query(PlanEntry)
-        .filter(PlanEntry.date >= start_date)
+        .filter(PlanEntry.date >= start, PlanEntry.date < start + timedelta(days=7))
         .order_by(PlanEntry.date)
         .limit(7)
         .all()
@@ -487,27 +766,31 @@ def get_plan(start: str, db: Session = Depends(get_db)):
 
 
 @app.put("/api/plan/{entry_date}")
-async def swap_day(entry_date: str, recipe_id: int, db: Session = Depends(get_db)):
+async def swap_day(entry_date: date, recipe_id: int, db: Session = Depends(get_db)):
     """Tauscht das Gericht eines einzelnen Tages (z.B. ausgelöst über das HA-Dashboard)."""
-    d = date.fromisoformat(entry_date)
-    entry = db.query(PlanEntry).filter(PlanEntry.date == d).first()
+    entry = db.query(PlanEntry).filter(PlanEntry.date == entry_date).first()
     if not entry:
         raise HTTPException(404, "Kein Plan-Eintrag für dieses Datum")
+    recipe = db.query(Recipe).get(recipe_id)
+    if not recipe:
+        raise HTTPException(404, "Rezept nicht gefunden")
     entry.recipe_id = recipe_id
     db.commit()
     settings = get_settings(db)
-    await ha_client.upsert_calendar_event(settings.calendar_entity, entry_date, entry.recipe.title)
+    known_titles = {r[0] for r in db.query(Recipe.title).all()}
+    await ha_client.upsert_calendar_event(
+        settings.calendar_entity, entry_date.isoformat(), entry.recipe.title, known_titles=known_titles
+    )
     return {"status": "ok"}
 
 
 # ---------- Einkaufsliste ----------
 
 @app.post("/api/shopping-list/push")
-async def push_shopping_list(start: str, db: Session = Depends(get_db)):
-    start_date = date.fromisoformat(start)
+async def push_shopping_list(start: date, db: Session = Depends(get_db)):
     entries = (
         db.query(PlanEntry)
-        .filter(PlanEntry.date >= start_date)
+        .filter(PlanEntry.date >= start, PlanEntry.date < start + timedelta(days=7))
         .order_by(PlanEntry.date)
         .limit(7)
         .all()
@@ -523,35 +806,30 @@ async def push_shopping_list(start: str, db: Session = Depends(get_db)):
 
 # ---------- Kühlschrank ----------
 
-def _norm(name: str) -> str:
-    return name.strip().lower()
-
-
 @app.get("/api/fridge", response_model=list[FridgeItemOut])
 def list_fridge(db: Session = Depends(get_db)):
     """
     Kombinierte Sicht aus aktuellem Bestand (fridge_items) und Standardartikeln
     (fridge_staples). Ein Standardartikel ohne passenden Bestandseintrag wird
-    trotzdem angezeigt, aber als 'fehlt' markiert (in_stock=False) – so bleibt
-    sichtbar, dass er eigentlich immer vorhanden sein sollte.
+    trotzdem angezeigt, aber als 'fehlt' markiert (in_stock=False).
     """
     items = db.query(FridgeItem).all()
-    staples_by_norm = {_norm(s.name): s for s in db.query(FridgeStaple).all()}
+    staples_by_artikel = {s.artikel_id: s for s in db.query(FridgeStaple).all()}
 
     result = []
     covered = set()
     for item in items:
-        key = _norm(item.name)
-        covered.add(key)
+        covered.add(item.artikel_id)
         result.append(FridgeItemOut(
-            id=item.id, name=item.name, amount=item.amount, unit=item.unit,
-            is_staple=key in staples_by_norm, in_stock=True,
+            id=item.id, artikel_id=item.artikel_id, name=item.artikel.name,
+            amount=item.amount, unit=item.unit,
+            is_staple=item.artikel_id in staples_by_artikel, in_stock=True,
         ))
-    for key, staple in staples_by_norm.items():
-        if key not in covered:
+    for artikel_id, staple in staples_by_artikel.items():
+        if artikel_id not in covered:
             result.append(FridgeItemOut(
-                id=None, name=staple.name, amount=None, unit=staple.unit,
-                is_staple=True, in_stock=False,
+                id=None, artikel_id=artikel_id, name=staple.artikel.name, amount=None,
+                unit=staple.unit, is_staple=True, in_stock=False,
             ))
 
     result.sort(key=lambda i: i.name.lower())
@@ -560,23 +838,22 @@ def list_fridge(db: Session = Depends(get_db)):
 
 @app.post("/api/fridge/items", response_model=FridgeItemOut)
 def upsert_fridge_item(payload: FridgeItemIn, db: Session = Depends(get_db)):
-    """Legt einen Bestandsartikel an oder aktualisiert Menge/Einheit, falls der Name schon existiert."""
-    name = payload.name.strip()
-    if not name:
-        raise HTTPException(400, "Name darf nicht leer sein.")
-    item = db.query(FridgeItem).filter(FridgeItem.name.ilike(name)).first()
+    """Legt einen Bestandsartikel an oder aktualisiert Menge/Einheit, falls
+    der Artikel schon existiert."""
+    _require_artikel(payload.artikel_id, db)
+    item = db.query(FridgeItem).filter(FridgeItem.artikel_id == payload.artikel_id).first()
     if item:
         item.amount = payload.amount
         item.unit = payload.unit
     else:
-        item = FridgeItem(name=name, amount=payload.amount, unit=payload.unit)
+        item = FridgeItem(artikel_id=payload.artikel_id, amount=payload.amount, unit=payload.unit)
         db.add(item)
     db.commit()
     db.refresh(item)
-    is_staple = db.query(FridgeStaple).filter(FridgeStaple.name.ilike(name)).first() is not None
+    is_staple = db.query(FridgeStaple).filter(FridgeStaple.artikel_id == payload.artikel_id).first() is not None
     return FridgeItemOut(
-        id=item.id, name=item.name, amount=item.amount, unit=item.unit,
-        is_staple=is_staple, in_stock=True,
+        id=item.id, artikel_id=item.artikel_id, name=item.artikel.name, amount=item.amount,
+        unit=item.unit, is_staple=is_staple, in_stock=True,
     )
 
 
@@ -594,28 +871,33 @@ def remove_fridge_item(item_id: int, db: Session = Depends(get_db)):
 
 @app.post("/api/fridge/staples", response_model=FridgeItemOut)
 def mark_fridge_staple(payload: FridgeStapleIn, db: Session = Depends(get_db)):
-    """Markiert einen Artikelnamen als Standardartikel ('sollte immer vorhanden sein')."""
-    name = payload.name.strip()
-    if not name:
-        raise HTTPException(400, "Name darf nicht leer sein.")
-    staple = db.query(FridgeStaple).filter(FridgeStaple.name.ilike(name)).first()
+    """Markiert einen Artikel als Standardartikel ('sollte immer vorhanden sein')."""
+    _require_artikel(payload.artikel_id, db)
+    staple = db.query(FridgeStaple).filter(FridgeStaple.artikel_id == payload.artikel_id).first()
     if staple:
         staple.unit = payload.unit
     else:
-        staple = FridgeStaple(name=name, unit=payload.unit)
+        staple = FridgeStaple(artikel_id=payload.artikel_id, unit=payload.unit)
         db.add(staple)
     db.commit()
 
-    item = db.query(FridgeItem).filter(FridgeItem.name.ilike(name)).first()
+    artikel = db.query(Artikel).get(payload.artikel_id)
+    item = db.query(FridgeItem).filter(FridgeItem.artikel_id == payload.artikel_id).first()
     if item:
-        return FridgeItemOut(id=item.id, name=item.name, amount=item.amount, unit=item.unit, is_staple=True, in_stock=True)
-    return FridgeItemOut(id=None, name=name, amount=None, unit=payload.unit, is_staple=True, in_stock=False)
+        return FridgeItemOut(
+            id=item.id, artikel_id=item.artikel_id, name=artikel.name, amount=item.amount,
+            unit=item.unit, is_staple=True, in_stock=True,
+        )
+    return FridgeItemOut(
+        id=None, artikel_id=payload.artikel_id, name=artikel.name, amount=None,
+        unit=payload.unit, is_staple=True, in_stock=False,
+    )
 
 
-@app.delete("/api/fridge/staples/by-name/{name}")
-def unmark_fridge_staple(name: str, db: Session = Depends(get_db)):
+@app.delete("/api/fridge/staples/by-artikel/{artikel_id}")
+def unmark_fridge_staple(artikel_id: int, db: Session = Depends(get_db)):
     """Entfernt die Standardartikel-Markierung. Ein evtl. vorhandener Bestandseintrag bleibt bestehen."""
-    staple = db.query(FridgeStaple).filter(FridgeStaple.name.ilike(name)).first()
+    staple = db.query(FridgeStaple).filter(FridgeStaple.artikel_id == artikel_id).first()
     if not staple:
         raise HTTPException(404, "Standardartikel nicht gefunden")
     db.delete(staple)
@@ -627,23 +909,30 @@ def unmark_fridge_staple(name: str, db: Session = Depends(get_db)):
 
 @app.get("/api/watchlist", response_model=list[WatchlistItemOut])
 def list_watchlist(db: Session = Depends(get_db)):
-    return db.query(WatchlistItem).order_by(WatchlistItem.name).all()
+    items = [
+        WatchlistItemOut(id=i.id, artikel_id=i.artikel_id, name=i.artikel.name, unit=i.unit)
+        for i in db.query(WatchlistItem).all()
+    ]
+    items.sort(key=lambda i: i.name.lower())
+    return items
 
 
 @app.post("/api/watchlist", response_model=WatchlistItemOut)
 def add_watchlist_item(payload: WatchlistItemIn, db: Session = Depends(get_db)):
-    name = payload.name.strip()
-    existing = db.query(WatchlistItem).filter(WatchlistItem.name.ilike(name)).first()
+    _require_artikel(payload.artikel_id, db)
+    existing = db.query(WatchlistItem).filter(WatchlistItem.artikel_id == payload.artikel_id).first()
     if existing:
         existing.unit = payload.unit
         db.commit()
         db.refresh(existing)
-        return existing
-    item = WatchlistItem(name=name, unit=payload.unit)
+        return WatchlistItemOut(
+            id=existing.id, artikel_id=existing.artikel_id, name=existing.artikel.name, unit=existing.unit,
+        )
+    item = WatchlistItem(artikel_id=payload.artikel_id, unit=payload.unit)
     db.add(item)
     db.commit()
     db.refresh(item)
-    return item
+    return WatchlistItemOut(id=item.id, artikel_id=item.artikel_id, name=item.artikel.name, unit=item.unit)
 
 
 @app.delete("/api/watchlist/{item_id}")
@@ -726,4 +1015,5 @@ def list_offers(retailer: str | None = None, source: str | None = None, db: Sess
 
 
 app.mount("/recipe-images", StaticFiles(directory=str(IMAGES_DIR)), name="recipe-images")
+app.mount("/artikel-images", StaticFiles(directory=str(ARTIKEL_IMAGES_DIR)), name="artikel-images")
 app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")

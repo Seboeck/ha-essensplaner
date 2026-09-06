@@ -12,6 +12,7 @@
         {"uniqueName": "edeka", "id": "retailers/1", "name": "EDEKA", "industryId": 1023}
       ],
       "product": {"id": 1, "name": "Butter 250g", "description": null},
+      "images": {"count": 1, "metadata": [{"aspectRatio": 1.21, "width": 1.0, "height": 0.82}]},
       "validityDates": [
         {"from": "2026-09-06T22:00:00Z", "to": "2026-09-12T21:59:59Z"}
       ]
@@ -26,6 +27,7 @@
         {"uniqueName": "kaufland", "id": "retailers/2", "name": "Kaufland", "industryId": 1023}
       ],
       "product": {"id": 2, "name": "Kaffee gemahlen 500g", "description": null},
+      "images": {"count": 0, "metadata": []},
       "validityDates": [
         {"from": "2026-09-06T22:00:00Z", "to": "2026-09-12T21:59:59Z"}
       ]

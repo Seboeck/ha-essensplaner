@@ -107,6 +107,15 @@
   .ingredient-row .ing-amount { flex: 1; }
   .ingredient-row .ing-unit { flex: 1; }
   .ingredient-row button { flex: 0 0 auto; }
+  .artikel-autocomplete-wrap { position: relative; flex: 2; }
+  .artikel-suggest-dropdown {
+    position: absolute; top: 100%; left: 0; right: 0; z-index: 10;
+    background: var(--card-bg); border: 1px solid var(--border);
+    border-radius: 4px; max-height: 200px; overflow-y: auto;
+  }
+  .artikel-suggest-item { padding: 6px 10px; cursor: pointer; }
+  .artikel-suggest-item:hover { background: var(--bg); }
+  .artikel-suggest-new { font-style: italic; border-top: 1px solid var(--border); }
   .hint { color: var(--muted); font-size: 0.85rem; margin-top: 4px; }
   .hint a { color: var(--accent); }
   button.primary {
@@ -301,6 +310,11 @@
       <div id="conflicts-list"></div>
       <button id="apply-import" class="primary">Import abschließen</button>
     </div>
+    <div id="import-ingredient-ambiguities" class="card" style="display:none;">
+      <p class="recipe-title">Import: unklare Zutaten-Zuordnung</p>
+      <p class="hint">Diese Zutaten passen nur ungefähr zu einem bestehenden Artikel. Bitte wählen oder neu anlegen.</p>
+      <div id="ambiguities-list"></div>
+    </div>
     <div id="photo-import-msg" class="msg"></div>
     <div id="photo-review" class="card" style="display:none;">
       <p class="recipe-title">Foto-Import: Rezept prüfen</p>
@@ -385,6 +399,12 @@
       <div id="offer-sources-list"></div>
     </div>
 
+    <div class="card">
+      <p class="recipe-title">Unsichere Zuordnungen</p>
+      <p class="hint">Diese Angebote passen nur ungefähr zu einem bestehenden Artikel.</p>
+      <div id="pending-matches-list"></div>
+    </div>
+
     <div class="toolbar">
       <select id="offers-filter-retailer">
         <option value="">Alle Händler</option>
@@ -402,13 +422,7 @@
   </section>
 
   <section id="tab-ingredients" class="panel">
-    <div class="card">
-      <table>
-        <thead><tr><th>Zutat</th><th>Preis</th></tr></thead>
-        <tbody id="ingredients-body"></tbody>
-      </table>
-      <p class="hint">Preisübersicht folgt, sobald Preise erfasst werden können.</p>
-    </div>
+    <div id="artikel-list"></div>
   </section>
 
   <section id="tab-settings" class="panel">
@@ -448,7 +462,7 @@
     function escapeHtml(str) {
       const d = document.createElement('div');
       d.textContent = str;
-      return d.innerHTML;
+      return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     }
 
     let recipesCache = [];
@@ -542,24 +556,62 @@
       }
     });
 
-    function renderIngredientList(recipes) {
-      const seen = new Map();
-      for (const r of recipes) {
-        for (const ing of r.ingredients) {
-          const key = ing.name.trim().toLowerCase();
-          if (key && !seen.has(key)) seen.set(key, ing.name.trim());
-        }
+    async function loadArtikelOverview() {
+      const container = document.getElementById('artikel-list');
+      try {
+        const res = await fetch('api/artikel');
+        if (!res.ok) throw new Error(await res.text());
+        const artikel = await res.json();
+        renderArtikelOverview(artikel);
+      } catch (e) {
+        container.innerHTML = `<p class="empty">Fehler beim Laden: ${escapeHtml(e.message)}</p>`;
       }
-      const names = [...seen.values()].sort((a, b) => a.localeCompare(b, 'de'));
-      const body = document.getElementById('ingredients-body');
-      if (!names.length) {
-        body.innerHTML = '<tr><td colspan="2" class="empty">Keine Zutaten vorhanden.</td></tr>';
+    }
+
+    function renderArtikelOverview(artikel) {
+      const container = document.getElementById('artikel-list');
+      if (!artikel.length) {
+        container.innerHTML = '<p class="empty">Noch keine Artikel vorhanden.</p>';
         return;
       }
-      body.innerHTML = names.map(n =>
-        `<tr><td>${escapeHtml(n)}</td><td class="placeholder">– noch nicht erfasst</td></tr>`
-      ).join('');
+      container.innerHTML = artikel.map(a => {
+        const thumb = a.image_path
+          ? `<img class="recipe-thumb" src="${escapeHtml(a.image_path)}" alt="">`
+          : `<div class="recipe-thumb-placeholder">🛒</div>`;
+        const priceText = a.last_price != null
+          ? `${a.last_price.toFixed(2)} €`
+          : (a.last_discount_text || 'kein Preis erfasst');
+        return `
+          <div class="card recipe-card" data-artikel-history="${a.id}">
+            ${thumb}
+            <div class="recipe-card-body">
+              <p class="recipe-title">${escapeHtml(a.name)}</p>
+              <p class="recipe-meta">${escapeHtml(priceText)}</p>
+            </div>
+          </div>
+          <div class="artikel-history" id="artikel-history-${a.id}" style="display:none;"></div>`;
+      }).join('');
     }
+
+    document.getElementById('artikel-list').addEventListener('click', async (e) => {
+      const card = e.target.closest('[data-artikel-history]');
+      if (!card) return;
+      const id = card.dataset.artikelHistory;
+      const historyEl = document.getElementById(`artikel-history-${id}`);
+      if (historyEl.style.display === 'block') {
+        historyEl.style.display = 'none';
+        return;
+      }
+      const res = await fetch(`api/artikel/${id}/history`);
+      const entries = await res.json();
+      historyEl.innerHTML = entries.length
+        ? '<ul class="ingredients">' + entries.map(h => {
+            const price = h.price != null ? `${h.price.toFixed(2)} €` : '';
+            return `<li>${escapeHtml(h.valid_from)} – ${escapeHtml(h.valid_until)}: ${price} ${escapeHtml(h.discount_text || '')} (${escapeHtml(h.retailer)})</li>`;
+          }).join('') + '</ul>'
+        : '<p class="placeholder">Noch keine Preis-Historie.</p>';
+      historyEl.style.display = 'block';
+    });
 
     async function loadRecipes() {
       try {
@@ -567,7 +619,6 @@
         if (!res.ok) throw new Error(await res.text());
         const recipes = await res.json();
         renderRecipes(recipes);
-        renderIngredientList(recipes);
       } catch (e) {
         document.getElementById('recipes-list').innerHTML =
           `<p class="empty">Fehler beim Laden der Rezepte: ${escapeHtml(e.message)}</p>`;
@@ -712,6 +763,33 @@
 
     document.getElementById('import-trigger').addEventListener('click', () => importFileInput.click());
 
+    let pendingIngredientAmbiguities = [];
+
+    function renderIngredientAmbiguities(ambiguities) {
+      pendingIngredientAmbiguities = ambiguities;
+      const panel = document.getElementById('import-ingredient-ambiguities');
+      const list = document.getElementById('ambiguities-list');
+      if (!ambiguities.length) {
+        panel.style.display = 'none';
+        list.innerHTML = '';
+        return;
+      }
+      list.innerHTML = ambiguities.map((a, i) => {
+        const options = a.candidates.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('');
+        return `
+          <div class="conflict-row" data-ambiguity-index="${i}">
+            <div>
+              <div class="conflict-title">${escapeHtml(a.ingredient_name)}</div>
+            </div>
+            <select class="ambiguity-select">
+              ${options}
+              <option value="new">Neuen Artikel "${escapeHtml(a.ingredient_name)}" anlegen</option>
+            </select>
+          </div>`;
+      }).join('');
+      panel.style.display = 'block';
+    }
+
     importFileInput.addEventListener('change', async () => {
       const file = importFileInput.files[0];
       if (!file) return;
@@ -734,10 +812,13 @@
         if (!previewRes.ok) throw new Error(await previewRes.text());
         const preview = await previewRes.json();
 
-        if (preview.conflicts.length === 0) {
-          await runImportApply([]);
+        renderIngredientAmbiguities(preview.ingredient_ambiguities || []);
+
+        if (preview.conflicts.length === 0 && !(preview.ingredient_ambiguities || []).length) {
+          await runImportApply([], []);
         } else {
           renderConflicts(preview.conflicts);
+          conflictsPanel.style.display = 'block';
         }
       } catch (e) {
         showImportMsg('Fehler beim Import: ' + e.message, false);
@@ -769,15 +850,45 @@
         const checked = row.querySelector('input[type="radio"]:checked');
         return { import_index: index, action: checked ? checked.value : 'alt' };
       });
-      await runImportApply(resolutions);
+
+      const ingredientResolutions = [];
+      const ambiguityRows = document.querySelectorAll('#ambiguities-list .conflict-row');
+      for (const row of ambiguityRows) {
+        const idx = parseInt(row.dataset.ambiguityIndex, 10);
+        const ambiguity = pendingIngredientAmbiguities[idx];
+        const select = row.querySelector('.ambiguity-select');
+        let artikelId;
+        if (select.value === 'new') {
+          const res = await fetch('api/artikel', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: ambiguity.ingredient_name }),
+          });
+          const artikel = await res.json();
+          artikelId = artikel.id;
+        } else {
+          artikelId = parseInt(select.value, 10);
+        }
+        ingredientResolutions.push({
+          recipe_index: ambiguity.recipe_index,
+          ingredient_index: ambiguity.ingredient_index,
+          artikel_id: artikelId,
+        });
+      }
+
+      await runImportApply(resolutions, ingredientResolutions);
     });
 
-    async function runImportApply(resolutions) {
+    async function runImportApply(resolutions, ingredientResolutions) {
       try {
         const res = await fetch('api/recipes/import/apply', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ recipes: pendingImportRecipes, resolutions }),
+          body: JSON.stringify({
+            recipes: pendingImportRecipes,
+            resolutions,
+            ingredient_resolutions: ingredientResolutions || [],
+          }),
         });
         if (!res.ok) throw new Error(await res.text());
         const result = await res.json();
@@ -786,11 +897,89 @@
           true
         );
         conflictsPanel.style.display = 'none';
+        document.getElementById('import-ingredient-ambiguities').style.display = 'none';
         pendingImportRecipes = null;
+        pendingIngredientAmbiguities = [];
         loadRecipes();
+        loadArtikelOverview();
       } catch (e) {
         showImportMsg('Fehler beim Import: ' + e.message, false);
       }
+    }
+
+    // ---------- Artikel-Autocomplete (wiederverwendbare Komponente) ----------
+    // Verwandelt ein Text-Input in ein Autocomplete-Feld gegen
+    // /api/artikel/suggest. onSelect(artikelId, name) wird aufgerufen,
+    // sobald ein bestehender Artikel gewählt oder ein neuer angelegt wurde.
+    function attachArtikelAutocomplete(inputEl, onSelect) {
+      const wrap = document.createElement('div');
+      wrap.className = 'artikel-autocomplete-wrap';
+      inputEl.parentNode.insertBefore(wrap, inputEl);
+      wrap.appendChild(inputEl);
+
+      const dropdown = document.createElement('div');
+      dropdown.className = 'artikel-suggest-dropdown';
+      dropdown.style.display = 'none';
+      wrap.appendChild(dropdown);
+
+      let debounceTimer = null;
+
+      async function search(query) {
+        if (!query.trim()) {
+          dropdown.style.display = 'none';
+          return;
+        }
+        const res = await fetch('api/artikel/suggest?q=' + encodeURIComponent(query));
+        const suggestions = res.ok ? await res.json() : [];
+        renderDropdown(suggestions, query);
+      }
+
+      function renderDropdown(suggestions, query) {
+        const items = suggestions.map(s => `
+          <div class="artikel-suggest-item" data-artikel-id="${s.id}" data-artikel-name="${escapeHtml(s.name)}">${escapeHtml(s.name)}</div>
+        `);
+        items.push(`<div class="artikel-suggest-item artikel-suggest-new" data-new="${escapeHtml(query)}">+ Neuen Artikel "${escapeHtml(query)}" anlegen</div>`);
+        dropdown.innerHTML = items.join('');
+        dropdown.style.display = 'block';
+      }
+
+      inputEl.addEventListener('input', () => {
+        clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => search(inputEl.value), 250);
+      });
+
+      inputEl.addEventListener('blur', () => {
+        setTimeout(() => { dropdown.style.display = 'none'; }, 150);
+      });
+
+      dropdown.addEventListener('mousedown', async (e) => {
+        const item = e.target.closest('.artikel-suggest-item');
+        if (!item) return;
+        e.preventDefault();
+        if (item.dataset.new !== undefined) {
+          const res = await fetch('api/artikel', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: item.dataset.new }),
+          });
+          if (!res.ok) return;
+          const artikel = await res.json();
+          inputEl.value = artikel.name;
+          onSelect(artikel.id, artikel.name);
+        } else {
+          inputEl.value = item.dataset.artikelName;
+          onSelect(parseInt(item.dataset.artikelId, 10), item.dataset.artikelName);
+        }
+        dropdown.style.display = 'none';
+      });
+    }
+
+    async function suggestSingleHighConfidence(name) {
+      if (!name) return null;
+      const res = await fetch('api/artikel/suggest?q=' + encodeURIComponent(name));
+      if (!res.ok) return null;
+      const suggestions = await res.json();
+      return (suggestions.length === 1 && suggestions[0].confidence === 'high') ? suggestions[0] : null;
     }
 
     // ---------- Foto-Import ----------
@@ -810,6 +999,7 @@
       ing = ing || { name: '', amount: '', unit: '' };
       const row = document.createElement('div');
       row.className = 'ingredient-row';
+      row.dataset.artikelId = ing.artikel_id || '';
       row.innerHTML = `
         <input type="text" class="ing-name" placeholder="Zutat" value="${escapeHtml(ing.name || '')}">
         <input type="text" class="ing-amount" placeholder="Menge" value="${ing.amount ?? ''}">
@@ -817,12 +1007,18 @@
         <button type="button" class="secondary">✕</button>
       `;
       row.querySelector('button').addEventListener('click', () => row.remove());
+      const nameInput = row.querySelector('.ing-name');
+      attachArtikelAutocomplete(nameInput, (artikelId) => {
+        row.dataset.artikelId = artikelId;
+      });
+      nameInput.addEventListener('input', () => { row.dataset.artikelId = ''; });
       prIngredients.appendChild(row);
+      return row;
     }
 
     document.getElementById('pr-add-ingredient').addEventListener('click', () => addIngredientRow());
 
-    function fillReviewForm(recipe) {
+    async function fillReviewForm(recipe) {
       document.getElementById('pr-title').value = recipe.title || '';
       document.getElementById('pr-servings').value = recipe.base_servings || 4;
       document.getElementById('pr-tags').value = recipe.tags || '';
@@ -830,7 +1026,14 @@
       prIngredients.innerHTML = '';
       const ingredients = recipe.ingredients || [];
       if (ingredients.length) {
-        ingredients.forEach(addIngredientRow);
+        for (const ing of ingredients) {
+          const row = addIngredientRow(ing);
+          const match = await suggestSingleHighConfidence(ing.name);
+          if (match) {
+            row.dataset.artikelId = match.id;
+            row.querySelector('.ing-name').value = match.name;
+          }
+        }
       } else {
         addIngredientRow();
       }
@@ -868,16 +1071,26 @@
     });
 
     document.getElementById('pr-save').addEventListener('click', async () => {
-      const ingredients = [...prIngredients.querySelectorAll('.ingredient-row')].map(row => {
-        const name = row.querySelector('.ing-name').value.trim();
-        const amountRaw = row.querySelector('.ing-amount').value.trim();
-        const unit = row.querySelector('.ing-unit').value.trim();
-        return {
-          name,
-          amount: amountRaw ? parseFloat(amountRaw.replace(',', '.')) : null,
-          unit: unit || null,
-        };
-      }).filter(i => i.name);
+      const rows = [...prIngredients.querySelectorAll('.ingredient-row')];
+      const unresolvedRow = rows.find(row =>
+        row.querySelector('.ing-name').value.trim() && !row.dataset.artikelId
+      );
+      if (unresolvedRow) {
+        showPhotoMsg('Bitte für jede Zutat einen Artikel aus der Liste wählen oder neu anlegen.', false);
+        return;
+      }
+
+      const ingredients = rows
+        .filter(row => row.dataset.artikelId)
+        .map(row => {
+          const amountRaw = row.querySelector('.ing-amount').value.trim();
+          const unit = row.querySelector('.ing-unit').value.trim();
+          return {
+            artikel_id: parseInt(row.dataset.artikelId, 10),
+            amount: amountRaw ? parseFloat(amountRaw.replace(',', '.')) : null,
+            unit: unit || null,
+          };
+        });
 
       const title = document.getElementById('pr-title').value.trim();
       if (!title) {
@@ -914,6 +1127,7 @@
         showPhotoMsg('Rezept gespeichert.', true);
         photoReview.style.display = 'none';
         loadRecipes();
+        loadArtikelOverview();
       } catch (e) {
         showPhotoMsg('Fehler beim Speichern: ' + e.message, false);
       }
@@ -945,10 +1159,10 @@
         const missing = !i.in_stock ? '<span class="tag missing-tag">fehlt</span>' : '';
         const stockBtn = i.in_stock
           ? `<button class="secondary" data-remove-fridge="${i.id}">Verbraucht / entfernen</button>`
-          : `<button class="secondary" data-restock="${escapeHtml(i.name)}" data-restock-unit="${escapeHtml(i.unit || '')}">Als vorhanden markieren</button>`;
+          : `<button class="secondary" data-restock-artikel="${i.artikel_id}" data-restock-unit="${escapeHtml(i.unit || '')}">Als vorhanden markieren</button>`;
         const stapleBtn = i.is_staple
-          ? `<button class="secondary" data-unstaple="${escapeHtml(i.name)}">Kein Standardartikel mehr</button>`
-          : `<button class="secondary" data-stapleize="${escapeHtml(i.name)}" data-stapleize-unit="${escapeHtml(i.unit || '')}">Als Standardartikel markieren</button>`;
+          ? `<button class="secondary" data-unstaple-artikel="${i.artikel_id}">Kein Standardartikel mehr</button>`
+          : `<button class="secondary" data-stapleize-artikel="${i.artikel_id}" data-stapleize-unit="${escapeHtml(i.unit || '')}">Als Standardartikel markieren</button>`;
         return `
           <div class="card fridge-item ${!i.in_stock ? 'missing' : ''}">
             <p class="recipe-title">${escapeHtml(i.name)}</p>
@@ -959,6 +1173,10 @@
       }).join('');
     }
 
+    let fridgeArtikelId = null;
+    attachArtikelAutocomplete(document.getElementById('fridge-name'), (id) => { fridgeArtikelId = id; });
+    document.getElementById('fridge-name').addEventListener('input', () => { fridgeArtikelId = null; });
+
     document.getElementById('fridge-add').addEventListener('click', async () => {
       const nameInput = document.getElementById('fridge-name');
       const amountInput = document.getElementById('fridge-amount');
@@ -966,8 +1184,11 @@
       const stapleInput = document.getElementById('fridge-staple');
       const msg = document.getElementById('fridge-msg');
 
-      const name = nameInput.value.trim();
-      if (!name) return;
+      if (!fridgeArtikelId) {
+        msg.textContent = 'Bitte einen Artikel aus der Liste wählen oder neu anlegen.';
+        msg.className = 'msg err';
+        return;
+      }
       const amountRaw = amountInput.value.trim();
       const unit = unitInput.value.trim();
 
@@ -976,7 +1197,7 @@
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            name,
+            artikel_id: fridgeArtikelId,
             amount: amountRaw ? parseFloat(amountRaw.replace(',', '.')) : null,
             unit: unit || null,
           }),
@@ -987,7 +1208,7 @@
           await fetch('api/fridge/staples', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name, unit: unit || null }),
+            body: JSON.stringify({ artikel_id: fridgeArtikelId, unit: unit || null }),
           });
         }
 
@@ -995,6 +1216,7 @@
         amountInput.value = '';
         unitInput.value = '';
         stapleInput.checked = false;
+        fridgeArtikelId = null;
         msg.className = 'msg';
         loadFridge();
       } catch (e) {
@@ -1005,9 +1227,9 @@
 
     document.getElementById('fridge-list').addEventListener('click', async (e) => {
       const removeBtn = e.target.closest('[data-remove-fridge]');
-      const restockBtn = e.target.closest('[data-restock]');
-      const stapleizeBtn = e.target.closest('[data-stapleize]');
-      const unstapleBtn = e.target.closest('[data-unstaple]');
+      const restockBtn = e.target.closest('[data-restock-artikel]');
+      const stapleizeBtn = e.target.closest('[data-stapleize-artikel]');
+      const unstapleBtn = e.target.closest('[data-unstaple-artikel]');
 
       if (removeBtn) {
         await fetch(`api/fridge/items/${removeBtn.dataset.removeFridge}`, { method: 'DELETE' });
@@ -1016,18 +1238,24 @@
         await fetch('api/fridge/items', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: restockBtn.dataset.restock, amount: null, unit: restockBtn.dataset.restockUnit || null }),
+          body: JSON.stringify({
+            artikel_id: parseInt(restockBtn.dataset.restockArtikel, 10),
+            amount: null, unit: restockBtn.dataset.restockUnit || null,
+          }),
         });
         loadFridge();
       } else if (stapleizeBtn) {
         await fetch('api/fridge/staples', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: stapleizeBtn.dataset.stapleize, unit: stapleizeBtn.dataset.stapleizeUnit || null }),
+          body: JSON.stringify({
+            artikel_id: parseInt(stapleizeBtn.dataset.stapleizeArtikel, 10),
+            unit: stapleizeBtn.dataset.stapleizeUnit || null,
+          }),
         });
         loadFridge();
       } else if (unstapleBtn) {
-        await fetch(`api/fridge/staples/by-name/${encodeURIComponent(unstapleBtn.dataset.unstaple)}`, { method: 'DELETE' });
+        await fetch(`api/fridge/staples/by-artikel/${unstapleBtn.dataset.unstapleArtikel}`, { method: 'DELETE' });
         loadFridge();
       }
     });
@@ -1082,18 +1310,28 @@
         </div>`).join('');
     }
 
+    let watchlistArtikelId = null;
+    attachArtikelAutocomplete(document.getElementById('watchlist-name'), (id) => { watchlistArtikelId = id; });
+    document.getElementById('watchlist-name').addEventListener('input', () => { watchlistArtikelId = null; });
+
     document.getElementById('watchlist-add').addEventListener('click', async () => {
       const nameInput = document.getElementById('watchlist-name');
       const unitInput = document.getElementById('watchlist-unit');
-      const name = nameInput.value.trim();
-      if (!name) return;
+      const msg = document.getElementById('watchlist-msg');
+      if (!watchlistArtikelId) {
+        msg.textContent = 'Bitte einen Artikel aus der Liste wählen oder neu anlegen.';
+        msg.className = 'msg err';
+        return;
+      }
       await fetch('api/watchlist', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, unit: unitInput.value.trim() || null }),
+        body: JSON.stringify({ artikel_id: watchlistArtikelId, unit: unitInput.value.trim() || null }),
       });
       nameInput.value = '';
       unitInput.value = '';
+      watchlistArtikelId = null;
+      msg.className = 'msg';
       loadWatchlist();
     });
 
@@ -1138,7 +1376,40 @@
         } finally {
           loadOfferSources();
           loadOffers();
+          loadArtikelOverview();
+          loadPendingMatches();
         }
+      }
+    });
+
+    async function loadPendingMatches() {
+      const container = document.getElementById('pending-matches-list');
+      const res = await fetch('api/artikel/pending-matches');
+      const items = await res.json();
+      if (!items.length) {
+        container.innerHTML = '<p class="empty">Keine offenen Zuordnungen.</p>';
+        return;
+      }
+      container.innerHTML = items.map(p => `
+        <div class="card fridge-item">
+          <p class="recipe-title">${escapeHtml(p.product_name)}</p>
+          <p class="recipe-meta">könnte zu "${escapeHtml(p.artikel_name)}" gehören (${escapeHtml(p.retailer)}, Score ${Math.round(p.score)})</p>
+          <div class="fridge-actions">
+            <button class="secondary" data-confirm-pending="${p.id}">Bestätigen</button>
+            <button class="secondary" data-reject-pending="${p.id}">Ablehnen</button>
+          </div>
+        </div>`).join('');
+    }
+
+    document.getElementById('pending-matches-list').addEventListener('click', async (e) => {
+      const confirmBtn = e.target.closest('[data-confirm-pending]');
+      const rejectBtn = e.target.closest('[data-reject-pending]');
+      if (confirmBtn) {
+        await fetch(`api/artikel/pending-matches/${confirmBtn.dataset.confirmPending}/confirm`, { method: 'POST' });
+        loadPendingMatches();
+      } else if (rejectBtn) {
+        await fetch(`api/artikel/pending-matches/${rejectBtn.dataset.rejectPending}/reject`, { method: 'POST' });
+        loadPendingMatches();
       }
     });
 
@@ -1184,11 +1455,13 @@
     loadOfferSettings();
     loadWatchlist();
     loadOfferSources();
+    loadPendingMatches();
     loadOffers();
 
     loadRecipes();
     loadSettings();
     loadFridge();
+    loadArtikelOverview();
   </script>
 </body>
 </html>

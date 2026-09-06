@@ -24,11 +24,12 @@ class Ingredient(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     recipe_id = Column(Integer, ForeignKey("recipes.id"))
-    name = Column(String, nullable=False)
+    artikel_id = Column(Integer, ForeignKey("artikel.id"), nullable=False)
     amount = Column(Float, nullable=True)
     unit = Column(String, nullable=True)  # g, kg, ml, l, Stück, EL, TL, ...
 
     recipe = relationship("Recipe", back_populates="ingredients")
+    artikel = relationship("Artikel")
 
 
 class Settings(Base):
@@ -60,9 +61,11 @@ class FridgeItem(Base):
     __tablename__ = "fridge_items"
 
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, nullable=False)
+    artikel_id = Column(Integer, ForeignKey("artikel.id"), nullable=False)
     amount = Column(Float, nullable=True)
     unit = Column(String, nullable=True)
+
+    artikel = relationship("Artikel")
 
 
 class FridgeStaple(Base):
@@ -71,8 +74,10 @@ class FridgeStaple(Base):
     __tablename__ = "fridge_staples"
 
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, nullable=False, unique=True)
+    artikel_id = Column(Integer, ForeignKey("artikel.id"), nullable=False, unique=True)
     unit = Column(String, nullable=True)
+
+    artikel = relationship("Artikel")
 
 
 class Offer(Base):
@@ -98,8 +103,10 @@ class WatchlistItem(Base):
     __tablename__ = "watchlist_items"
 
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, nullable=False, unique=True)
+    artikel_id = Column(Integer, ForeignKey("artikel.id"), nullable=False, unique=True)
     unit = Column(String, nullable=True)
+
+    artikel = relationship("Artikel")
 
 
 class OfferSourceConfig(Base):
@@ -113,3 +120,57 @@ class OfferSourceConfig(Base):
     schedule_hour = Column(Integer, nullable=True)  # 0-23
     last_run_at = Column(String, nullable=True)  # ISO-Timestamp
     last_status = Column(String, nullable=True)  # "ok" oder Fehlertext
+
+
+class Artikel(Base):
+    """Kanonischer Artikel-Datensatz: verbindet Rezept-Zutaten,
+    Kühlschrank-Bestand/-Standardartikel und Merklisten-Artikel mit
+    Bild und Preis-Historie aus Angeboten."""
+    __tablename__ = "artikel"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    image_path = Column(String, nullable=True)
+    created_at = Column(String, nullable=False)  # ISO-Timestamp
+
+
+class ArtikelPriceHistory(Base):
+    """Ein Preis-/Rabatt-Eintrag zu einem Artikel, aus einem Angebots-
+    Treffer mit hoher Konfidenz."""
+    __tablename__ = "artikel_price_history"
+
+    id = Column(Integer, primary_key=True, index=True)
+    artikel_id = Column(Integer, ForeignKey("artikel.id"), nullable=False)
+    price = Column(Float, nullable=True)
+    discount_text = Column(String, nullable=True)
+    retailer = Column(String, nullable=False)
+    source = Column(String, nullable=False)
+    valid_from = Column(Date, nullable=False)
+    valid_until = Column(Date, nullable=False)
+    recorded_at = Column(String, nullable=False)  # ISO-Timestamp
+
+    artikel = relationship("Artikel")
+
+
+class PendingArtikelMatch(Base):
+    """Ein Angebots-Produktname, der nur mit mittlerer Konfidenz zu einem
+    Artikel passt — wartet auf Bestätigung/Ablehnung durch den Nutzer.
+    Identität über (product_name, artikel_id), NICHT offer_id: Angebote
+    werden bei jedem Connector-Lauf komplett ersetzt (siehe run_source),
+    eine FK auf offer_id würde bei jedem Lauf verwaisen."""
+    __tablename__ = "pending_artikel_matches"
+
+    id = Column(Integer, primary_key=True, index=True)
+    product_name = Column(String, nullable=False)
+    artikel_id = Column(Integer, ForeignKey("artikel.id"), nullable=False)
+    score = Column(Float, nullable=False)
+    status = Column(String, nullable=False, default="open")  # open | confirmed | rejected
+    price = Column(Float, nullable=True)
+    discount_text = Column(String, nullable=True)
+    retailer = Column(String, nullable=False)
+    source = Column(String, nullable=False)
+    valid_from = Column(Date, nullable=False)
+    valid_until = Column(Date, nullable=False)
+    created_at = Column(String, nullable=False)  # ISO-Timestamp
+
+    artikel = relationship("Artikel")
