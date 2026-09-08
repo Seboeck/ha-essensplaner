@@ -465,6 +465,13 @@
       return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     }
 
+    // Bild-Pfade kommen vom Backend mit führendem "/" (z.B. "/artikel-images/1.jpg").
+    // Unter HA-Ingress läuft die App aber unter einem Präfix (/api/hassio_ingress/<token>/),
+    // daher müssen sie wie die api/-Fetches relativ zur aktuellen Seite aufgelöst werden.
+    function relImg(path) {
+      return path.replace(/^\//, '');
+    }
+
     let recipesCache = [];
 
     function renderRecipes(recipes) {
@@ -478,7 +485,7 @@
         const tags = (r.tags || '').split(',').map(t => t.trim()).filter(Boolean)
           .map(t => `<span class="tag">${escapeHtml(t)}</span>`).join('');
         const thumb = r.image_path
-          ? `<img class="recipe-thumb" src="${escapeHtml(r.image_path)}" alt="">`
+          ? `<img class="recipe-thumb" src="${escapeHtml(relImg(r.image_path))}" alt="">`
           : `<div class="recipe-thumb-placeholder">🍽️</div>`;
         return `
           <div class="card recipe-card" data-open-recipe="${r.id}">
@@ -505,7 +512,7 @@
       const tags = (r.tags || '').split(',').map(t => t.trim()).filter(Boolean)
         .map(t => `<span class="tag">${escapeHtml(t)}</span>`).join('');
       const image = r.image_path
-        ? `<img class="detail-image" src="${escapeHtml(r.image_path)}" alt="">`
+        ? `<img class="detail-image" src="${escapeHtml(relImg(r.image_path))}" alt="">`
         : `<div class="detail-image-placeholder">Kein Bild hinterlegt</div>`;
       const ingredients = r.ingredients.length
         ? '<ul class="ingredients">' + r.ingredients.map(i => {
@@ -576,7 +583,7 @@
       }
       container.innerHTML = artikel.map(a => {
         const thumb = a.image_path
-          ? `<img class="recipe-thumb" src="${escapeHtml(a.image_path)}" alt="">`
+          ? `<img class="recipe-thumb" src="${escapeHtml(relImg(a.image_path))}" alt="">`
           : `<div class="recipe-thumb-placeholder">🛒</div>`;
         const priceText = a.last_price != null
           ? `${a.last_price.toFixed(2)} €`

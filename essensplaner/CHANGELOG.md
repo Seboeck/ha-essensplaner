@@ -3,6 +3,15 @@
 Alle nennenswerten Änderungen an diesem Add-on werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.0.0/).
 
+## [0.9.1] - 2026-09-08
+
+### Behoben
+
+- Artikel- und Rezeptbilder wurden unter HA-Ingress nicht angezeigt, weil
+  `image_path` mit führendem `/` als absoluter Pfad ausgeliefert wurde und
+  damit am Ingress-Präfix vorbeizeigte. Bild-Quellen werden jetzt wie die
+  `api/`-Aufrufe relativ zur aktuellen Seite aufgelöst.
+
 ## [0.9.0] - 2026-09-06
 
 ### Hinzugefügt
